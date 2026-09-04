@@ -2,66 +2,86 @@
 
 ![Shit-Tacular cartoon cover](assets/github/social-preview.jpg)
 
-A first-person last-player-standing game set inside an apartment. The prototype supports a single-player match against three AI roommates and direct-IP multiplayer for 2–8 humans.
+A first-person, last-player-standing game set inside an apartment. Battle three AI roommates in single-player, or host a direct-IP multiplayer match for 2–8 people.
 
-## Play
+**[Play Shit-Tacular on GitHub Pages](https://philiphoddinott.github.io/Shit-Tacular/)** · **[View the source on GitHub](https://github.com/PhilipHoddinott/Shit-Tacular)**
 
-Open `project.godot` in Godot 4.7.2 and press **F6/F5**, or run:
+> The browser version currently supports single-player. Multiplayer uses ENet over UDP and requires the native desktop version of the game.
+
+## How to play
+
+Open `project.godot` in Godot 4.7.2 and press **F6** or **F5**. If you have the prepared Windows playtest folder, you can instead double-click `PLAY_GAME.bat`.
+
+You can also launch the project from PowerShell:
 
 ```powershell
 .\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64.exe --path .
 ```
 
-On Windows, you can also double-click `PLAY_GAME.bat`.
+Choose 1, 2, 3, or 5 lives per player from the main menu. Every combatant begins each life with 100 health and respawns at a random safe location while lives remain. The last player standing wins.
 
-Controls:
+Flush all three toilets to trigger **TRIPLE-SHIT!** The power-up recolors the pistol and increases its damage from 24 to 72 for the rest of the round, including after respawning.
 
-- `WASD`: move
-- `Shift`: sprint
-- `Space`: jump
-- Left mouse: fire pistol (24 damage)
-- `E`: flush a toilet, sit in a dining chair, or stand back up
-- `Escape`: release/capture the mouse
-- `R`: restart after the round ends
+## Controls
 
-Choose 1, 2, 3, or 5 lives per player from the main menu. Every combatant begins each life with 100 health and respawns at a random safe apartment location while lives remain. Flush all three toilets to trigger **TRIPLE-SHIT!**, recolor the pistol, and increase its damage to 72; the power-up stays active across respawns for that round.
+| Control | Action |
+| --- | --- |
+| `WASD` | Move |
+| `Shift` | Sprint |
+| `Space` | Jump |
+| Left mouse | Fire pistol |
+| `E` | Flush a toilet, sit in a dining chair, or stand up |
+| `Escape` | Release or recapture the mouse |
+| `R` | Restart after the round ends |
 
-## Multiplayer
+## Multiplayer playtest
 
-All players need the same version of the game.
+All players must use the same native version of the game. One player hosts the match and shares the address shown in the lobby with everyone else.
 
-1. The host opens **Multiplayer**, enters a name, chooses the total player count, and leaves **Automatically open the UDP port** enabled when hosting over the internet.
-2. The host selects **Create Lobby**. If the router accepts UPnP, the lobby displays a public address and enables **Copy Internet**. **Copy LAN** remains available for players on the same network.
-3. Each other player opens **Multiplayer**, pastes that value into **Host IP**, enters a name, and selects **Join**. The port is read automatically from the pasted value.
-4. When the lobby reaches the chosen player count, the host selects **Start Match**.
+### Host a match
 
-On the same Wi-Fi or wired network, the displayed private/LAN address should work directly. For play across the internet, the game asks a compatible UPnP router to forward the chosen port as **UDP**, displays the router's public IP, and removes the mapping when hosting ends. The default is UDP port `7000`.
+1. Open **Multiplayer** and enter your player name.
+2. Choose the total number of human players, from 2–8.
+3. For an internet match, leave **Automatically open the UDP port** enabled.
+4. Select **Create Lobby**.
+5. Use **Copy LAN** for players on the same network, or **Copy Internet** for remote players, then send the copied `IP:port` address to them.
+6. When everyone has joined, select **Start Match**.
 
-UPnP may be disabled or unavailable on some routers. If automatic setup fails, manually forward the selected UDP port to the host computer and allow the game through the operating-system firewall. Double NAT and carrier-grade NAT may still require a relay or VPN-style solution even when the local router supports UPnP.
+### Join a match
 
-The host is authoritative: clients send controls to the host, while the host resolves movement, shots, damage, lives, respawns, and the winner. Position and gameplay state are synchronized back to clients 20 times per second.
+1. Open **Multiplayer** and enter your player name.
+2. Paste the host's complete `IP:port` address into **Host IP**.
+3. Select **Join** and wait in the lobby for the host to start the match.
 
-Direct IP is intentionally the first multiplayer milestone because it needs no accounts or hosted service. A later room-code flow should use a small rendezvous/relay service so players do not need to expose an IP address or configure port forwarding.
+### Connection notes
+
+- Multiplayer uses ENet over UDP. The default port is `7000`.
+- **Copy LAN** is for computers on the same Wi-Fi or wired network.
+- **Copy Internet** becomes available after the host's router accepts the automatic UPnP port mapping.
+- If automatic setup fails, allow the game through the host computer's firewall and manually forward the selected **UDP** port to that computer.
+- Some double-NAT and carrier-grade NAT connections cannot accept direct connections. Those networks will need a VPN-style workaround or the planned relay service.
+
+The host is authoritative: clients send their controls to the host, and the host resolves movement, shots, damage, lives, respawns, and the winner. Game state is synchronized back to clients 20 times per second.
 
 ## Playtest logs
 
-The Windows build keeps the current session log plus up to ten older logs. Logs include Godot and system information along with important game, lobby, connection, UPnP, death, respawn, and round events.
+The Windows build keeps the current session log and up to ten older logs. They include Godot and system information along with important game, lobby, connection, UPnP, death, respawn, and round events.
 
 After a crash or connection problem:
 
 1. Restart the game.
 2. Select **Open Crash Logs** on the main menu.
-3. Send the newest `.log` file from the folder to the developer, together with a short description of what happened.
+3. Send the newest `.log` file to the developer with a short description of what happened.
 
-If the game fails before reaching the menu, run `PLAY_GAME_DIAGNOSTIC.bat` instead and send `startup-diagnostic.log` from the folder it displays. Logs may contain player names and network addresses, so review them before sharing outside the playtest group.
+If the game fails before reaching the menu, run `PLAY_GAME_DIAGNOSTIC.bat` and send the `startup-diagnostic.log` file from the folder it opens. On Windows, the normal log location is `%APPDATA%\Godot\app_userdata\Shit-Tacular\logs`.
 
-On Windows, the normal log location is `%APPDATA%\Godot\app_userdata\Shit-Tacular\logs`. A native engine crash may have a limited backtrace without matching debug symbols, but script errors and the surrounding gameplay/network events are still recorded.
+Logs may contain player names and network addresses, so review them before sharing outside the playtest group. Native engine crashes may have a limited backtrace without matching debug symbols, but script errors and the gameplay or network events leading up to the failure should still be recorded.
 
-The apartment includes room-specific wall colors, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror.
+## Project notes
 
-The GitHub-ready 1280x640 social preview is at `assets/github/social-preview.jpg`; the full-resolution generated source is stored beside it.
+The apartment includes room-specific wall colors, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror. The supplied apartment plan is rendered onto the prototype floor so the 3D walls and hallway routes can be checked against the source drawing as the level is refined.
 
-The supplied apartment plan is rendered directly onto the prototype floor so the 3D walls and hallway routes can be checked against the source drawing while the level is refined.
+The GitHub-ready 1280×640 social preview is stored at `assets/github/social-preview.jpg`, with its full-resolution generated source beside it.
 
 ## Roadmap
 
