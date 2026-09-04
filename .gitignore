@@ -1,0 +1,6 @@
+.godot/
+.godot_userdata/
+Godot_v*_win64.exe/
+*.log
+builds/
+artifacts/
