@@ -3,4 +3,5 @@
 Godot_v*_win64.exe/
 *.log
 builds/
+build/
 artifacts/
