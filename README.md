@@ -20,7 +20,7 @@ You can also launch the project from PowerShell:
 
 Choose 1, 2, 3, or 5 lives per player from the main menu. Every combatant begins each life with 100 health and respawns at a random safe location while lives remain. The last player standing wins.
 
-Flush all three toilets to trigger **TRIPLE-SHIT!** The power-up recolors the pistol and increases its damage from 24 to 72 for the rest of the round, including after respawning.
+Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and lock in the glowing rainbow rifle, which cycles colors and deals 40 damage per bullet for the rest of the round, including after respawning.
 
 ## Controls
 
@@ -29,7 +29,7 @@ Flush all three toilets to trigger **TRIPLE-SHIT!** The power-up recolors the pi
 | `WASD` | Move |
 | `Shift` | Sprint |
 | `Space` | Jump |
-| Left mouse | Fire pistol |
+| Left mouse | Fire the equipped weapon |
 | `E` | Flush a toilet, sit in a dining chair, or stand up |
 | `Escape` | Release or recapture the mouse |
 | `R` | Restart after the round ends |
@@ -79,7 +79,7 @@ Logs may contain player names and network addresses, so review them before shari
 
 ## Project notes
 
-The apartment includes room-specific wall colors, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror. The supplied apartment plan is rendered onto the prototype floor so the 3D walls and hallway routes can be checked against the source drawing as the level is refined.
+The apartment uses a doubled horizontal footprint for wider rooms and less crowded firefights. It includes room-specific wall colors, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror. The supplied apartment plan is rendered onto the prototype floor so the 3D walls and hallway routes can be checked against the source drawing as the level is refined.
 
 The GitHub-ready 1280×640 social preview is stored at `assets/github/social-preview.jpg`, with its full-resolution generated source beside it.
 

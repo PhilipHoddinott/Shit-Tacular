@@ -102,6 +102,7 @@ func _physics_process(delta: float) -> void:
 			_server_simulate(delta)
 		return
 
+	_animate_weapon(delta)
 	_client_tick(delta)
 
 
@@ -191,6 +192,7 @@ func apply_network_state(state: Dictionary) -> void:
 	var next_lives := int(state.get("lives", lives_remaining))
 	var next_alive := bool(state.get("alive", is_alive))
 	var next_damage := int(state.get("damage", damage))
+	var next_weapon := str(state.get("weapon", current_weapon))
 	var toilet_ids: Array = state.get("toilets", [])
 	if next_health != health:
 		health = next_health
@@ -200,16 +202,16 @@ func apply_network_state(state: Dictionary) -> void:
 		lives_remaining = next_lives
 		if is_local_player and network_game.has_method("update_local_lives"):
 			network_game.update_local_lives(lives_remaining)
+	if next_weapon != current_weapon:
+		equip_weapon(next_weapon)
 	if next_damage != damage:
 		damage = next_damage
-		if is_local_player and network_game.has_method("update_local_powerup"):
-			network_game.update_local_powerup(damage)
 	if toilet_ids.size() != flushed_toilets.size():
 		flushed_toilets.clear()
 		for toilet_id in toilet_ids:
 			flushed_toilets[int(toilet_id)] = true
 		if is_local_player and network_game.has_method("update_local_toilets"):
-			network_game.update_local_toilets(flushed_toilets.size(), next_damage)
+			network_game.update_local_toilets(flushed_toilets.size(), next_damage, next_weapon)
 	if next_alive != is_alive:
 		is_alive = next_alive
 		collision_layer = 2 if is_alive else 0

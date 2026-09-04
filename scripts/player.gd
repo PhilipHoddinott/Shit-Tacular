@@ -16,9 +16,15 @@ const INTERACT_DISTANCE := 2.4
 const FIRE_DISTANCE := 40.0
 const STANDING_CAMERA_HEIGHT := 1.34
 const SITTING_CAMERA_HEIGHT := 0.94
+const WEAPON_PISTOL := "pistol"
+const WEAPON_SHOTGUN := "shotgun"
+const WEAPON_RIFLE := "rifle"
+const WEAPON_BAZOOKA := "bazooka"
+const WEAPON_RAINBOW_RIFLE := "rainbow_rifle"
 
 var health := MAX_HEALTH
 var damage := BASE_DAMAGE
+var current_weapon := WEAPON_PISTOL
 var lives_remaining := 1
 var is_alive := true
 var input_enabled := true
@@ -31,6 +37,7 @@ var weapon_material: StandardMaterial3D
 var muzzle_flash: OmniLight3D
 var fire_cooldown := 0.0
 var recoil := 0.0
+var rainbow_time := 0.0
 var sitting := false
 var sitting_chair: Node
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
@@ -66,50 +73,137 @@ func _ready() -> void:
 
 func _create_weapon() -> void:
 	weapon_root = Node3D.new()
-	weapon_root.name = "Pistol"
-	weapon_root.position = Vector3(0.31, -0.28, -0.58)
-	weapon_root.scale = Vector3.ONE * 0.82
 	camera.add_child(weapon_root)
 
 	weapon_material = StandardMaterial3D.new()
-	weapon_material.albedo_color = Color("30343b")
-	weapon_material.metallic = 0.72
-	weapon_material.roughness = 0.28
+	_equip_weapon(WEAPON_PISTOL)
 
-	var slide := MeshInstance3D.new()
-	var slide_mesh := BoxMesh.new()
-	slide_mesh.size = Vector3(0.16, 0.15, 0.48)
-	slide.mesh = slide_mesh
-	slide.position = Vector3(0.0, 0.02, -0.12)
-	slide.material_override = weapon_material
-	weapon_root.add_child(slide)
 
-	var grip := MeshInstance3D.new()
-	var grip_mesh := BoxMesh.new()
-	grip_mesh.size = Vector3(0.14, 0.32, 0.15)
-	grip.mesh = grip_mesh
-	grip.position = Vector3(0.0, -0.19, 0.01)
-	grip.rotation.x = -0.16
-	grip.material_override = weapon_material
-	weapon_root.add_child(grip)
+func equip_weapon(weapon_name: String) -> void:
+	_equip_weapon(weapon_name)
 
-	var barrel := MeshInstance3D.new()
-	var barrel_mesh := CylinderMesh.new()
-	barrel_mesh.top_radius = 0.045
-	barrel_mesh.bottom_radius = 0.045
-	barrel_mesh.height = 0.31
-	barrel.mesh = barrel_mesh
-	barrel.position = Vector3(0.0, 0.035, -0.47)
-	barrel.rotation.x = PI * 0.5
-	barrel.material_override = weapon_material
-	weapon_root.add_child(barrel)
+
+func _equip_weapon(weapon_name: String) -> void:
+	if weapon_name not in [WEAPON_PISTOL, WEAPON_SHOTGUN, WEAPON_RIFLE, WEAPON_BAZOOKA, WEAPON_RAINBOW_RIFLE]:
+		weapon_name = WEAPON_PISTOL
+	current_weapon = weapon_name
+	weapon_material.emission_enabled = false
+	weapon_material.metallic = 0.58
+	weapon_material.roughness = 0.34
+	match current_weapon:
+		WEAPON_SHOTGUN:
+			damage = 12
+			weapon_material.albedo_color = Color("8a5132")
+		WEAPON_RIFLE:
+			damage = 20
+			weapon_material.albedo_color = Color("314a68")
+		WEAPON_BAZOOKA:
+			damage = 90
+			weapon_material.albedo_color = Color("5b7d43")
+		WEAPON_RAINBOW_RIFLE:
+			damage = 40
+			weapon_material.albedo_color = Color("ff3fcf")
+			weapon_material.emission_enabled = true
+			weapon_material.emission = Color("ff3fcf")
+			weapon_material.emission_energy_multiplier = 1.45
+		_:
+			damage = BASE_DAMAGE
+			weapon_material.albedo_color = Color("30343b")
+	_rebuild_weapon_visual()
+
+
+func weapon_display_name() -> String:
+	match current_weapon:
+		WEAPON_SHOTGUN:
+			return "SHOTGUN"
+		WEAPON_RIFLE:
+			return "RIFLE"
+		WEAPON_BAZOOKA:
+			return "BAZOOKA"
+		WEAPON_RAINBOW_RIFLE:
+			return "RAINBOW RIFLE"
+		_:
+			return "PISTOL"
+
+
+func weapon_damage_text() -> String:
+	return "%d x 8" % damage if current_weapon == WEAPON_SHOTGUN else str(damage)
+
+
+func _rebuild_weapon_visual() -> void:
+	for child in weapon_root.get_children():
+		child.visible = false
+		child.queue_free()
+	weapon_root.name = weapon_display_name().to_pascal_case()
+	var accent := StandardMaterial3D.new()
+	accent.albedo_color = Color("242832")
+	accent.metallic = 0.68
+	accent.roughness = 0.3
+	var muzzle_z := -0.68
+
+	match current_weapon:
+		WEAPON_SHOTGUN:
+			weapon_root.position = Vector3(0.34, -0.25, -0.7)
+			weapon_root.scale = Vector3.ONE * 0.86
+			_add_weapon_box(Vector3(0.0, -0.02, -0.18), Vector3(0.21, 0.18, 0.52), accent)
+			_add_weapon_box(Vector3(0.0, -0.08, 0.16), Vector3(0.18, 0.24, 0.32), weapon_material, Vector3(-0.18, 0.0, 0.0))
+			_add_weapon_cylinder(Vector3(0.0, 0.02, -0.68), 0.064, 0.76, accent)
+			_add_weapon_box(Vector3(0.0, -0.12, -0.55), Vector3(0.24, 0.16, 0.32), weapon_material)
+			muzzle_z = -1.08
+		WEAPON_RIFLE, WEAPON_RAINBOW_RIFLE:
+			weapon_root.position = Vector3(0.34, -0.25, -0.72)
+			weapon_root.scale = Vector3.ONE * 0.84
+			_add_weapon_box(Vector3(0.0, -0.01, -0.22), Vector3(0.2, 0.2, 0.56), weapon_material)
+			_add_weapon_box(Vector3(0.0, -0.08, 0.18), Vector3(0.17, 0.23, 0.34), accent, Vector3(-0.16, 0.0, 0.0))
+			_add_weapon_box(Vector3(0.0, -0.2, -0.24), Vector3(0.14, 0.28, 0.19), accent, Vector3(0.18, 0.0, 0.0))
+			_add_weapon_cylinder(Vector3(0.0, 0.01, -0.73), 0.038, 0.64, accent)
+			_add_weapon_cylinder(Vector3(0.0, 0.15, -0.2), 0.045, 0.32, accent, Vector3(0.0, 0.0, PI * 0.5))
+			muzzle_z = -1.08
+		WEAPON_BAZOOKA:
+			weapon_root.position = Vector3(0.3, -0.27, -0.64)
+			weapon_root.scale = Vector3.ONE * 0.9
+			_add_weapon_cylinder(Vector3(0.0, 0.0, -0.45), 0.12, 1.08, weapon_material)
+			_add_weapon_cylinder(Vector3(0.0, 0.0, -0.96), 0.16, 0.1, accent)
+			_add_weapon_cylinder(Vector3(0.0, 0.0, 0.05), 0.15, 0.12, accent)
+			_add_weapon_box(Vector3(0.0, -0.2, -0.35), Vector3(0.14, 0.32, 0.16), accent, Vector3(0.16, 0.0, 0.0))
+			muzzle_z = -1.08
+		_:
+			weapon_root.position = Vector3(0.31, -0.28, -0.58)
+			weapon_root.scale = Vector3.ONE * 0.82
+			_add_weapon_box(Vector3(0.0, 0.02, -0.12), Vector3(0.16, 0.15, 0.48), weapon_material)
+			_add_weapon_box(Vector3(0.0, -0.19, 0.01), Vector3(0.14, 0.32, 0.15), weapon_material, Vector3(-0.16, 0.0, 0.0))
+			_add_weapon_cylinder(Vector3(0.0, 0.035, -0.47), 0.045, 0.31, accent)
 
 	muzzle_flash = OmniLight3D.new()
 	muzzle_flash.light_color = Color("ffc36a")
 	muzzle_flash.light_energy = 0.0
-	muzzle_flash.omni_range = 2.2
-	muzzle_flash.position = Vector3(0.0, 0.03, -0.68)
+	muzzle_flash.omni_range = 2.6 if current_weapon == WEAPON_BAZOOKA else 2.2
+	muzzle_flash.position = Vector3(0.0, 0.03, muzzle_z)
 	weapon_root.add_child(muzzle_flash)
+
+
+func _add_weapon_box(position: Vector3, size: Vector3, material: StandardMaterial3D, rotation: Vector3 = Vector3.ZERO) -> void:
+	var part := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	part.mesh = mesh
+	part.position = position
+	part.rotation = rotation
+	part.material_override = material
+	weapon_root.add_child(part)
+
+
+func _add_weapon_cylinder(position: Vector3, radius: float, length: float, material: StandardMaterial3D, rotation: Vector3 = Vector3(PI * 0.5, 0.0, 0.0)) -> void:
+	var part := MeshInstance3D.new()
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = radius
+	mesh.bottom_radius = radius
+	mesh.height = length
+	part.mesh = mesh
+	part.position = position
+	part.rotation = rotation
+	part.material_override = material
+	weapon_root.add_child(part)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -128,6 +222,7 @@ func _physics_process(delta: float) -> void:
 	muzzle_flash.light_energy = move_toward(muzzle_flash.light_energy, 0.0, delta * 30.0)
 	recoil = move_toward(recoil, 0.0, delta * 5.5)
 	weapon_root.rotation.x = recoil
+	_animate_weapon(delta)
 	if sitting:
 		velocity = Vector3.ZERO
 		if input_enabled and Input.is_action_just_pressed("interact"):
@@ -160,14 +255,45 @@ func _physics_process(delta: float) -> void:
 		_interact()
 
 
+func _animate_weapon(delta: float) -> void:
+	if current_weapon == WEAPON_RAINBOW_RIFLE:
+		rainbow_time = fmod(rainbow_time + delta * 0.12, 1.0)
+		var rainbow_color := Color.from_hsv(rainbow_time, 0.78, 1.0)
+		weapon_material.albedo_color = rainbow_color
+		weapon_material.emission = rainbow_color
+
+
 func _fire() -> void:
 	if fire_cooldown > 0.0:
 		return
-	fire_cooldown = 0.28
-	recoil = 0.11
-	muzzle_flash.light_energy = 3.0
+	match current_weapon:
+		WEAPON_SHOTGUN:
+			fire_cooldown = 0.82
+			recoil = 0.2
+		WEAPON_RIFLE, WEAPON_RAINBOW_RIFLE:
+			fire_cooldown = 0.12
+			recoil = 0.075
+		WEAPON_BAZOOKA:
+			fire_cooldown = 1.25
+			recoil = 0.26
+		_:
+			fire_cooldown = 0.28
+			recoil = 0.11
+	muzzle_flash.light_energy = 5.5 if current_weapon == WEAPON_BAZOOKA else 3.0
 	var origin := camera.global_position
-	var end := origin + -camera.global_basis.z * FIRE_DISTANCE
+	var forward := -camera.global_basis.z
+	if current_weapon == WEAPON_BAZOOKA:
+		_fire_bazooka(origin, forward)
+		return
+	var pellet_count := 8 if current_weapon == WEAPON_SHOTGUN else 1
+	var spread := 0.075 if current_weapon == WEAPON_SHOTGUN else (0.012 if current_weapon == WEAPON_PISTOL else 0.006)
+	for _pellet in pellet_count:
+		var direction := (forward + camera.global_basis.x * randf_range(-spread, spread) + camera.global_basis.y * randf_range(-spread, spread)).normalized()
+		_fire_hitscan(origin, direction)
+
+
+func _fire_hitscan(origin: Vector3, direction: Vector3) -> void:
+	var end := origin + direction * FIRE_DISTANCE
 	var query := PhysicsRayQueryParameters3D.create(origin, end, 3, [self])
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 	if result:
@@ -175,7 +301,16 @@ func _fire() -> void:
 		if collider.has_method("apply_damage"):
 			collider.apply_damage(damage, self)
 		if game and game.has_method("spawn_impact"):
-			game.spawn_impact(result.position, result.normal, damage > BASE_DAMAGE)
+			game.spawn_impact(result.position, result.normal, current_weapon == WEAPON_RAINBOW_RIFLE)
+
+
+func _fire_bazooka(origin: Vector3, direction: Vector3) -> void:
+	var end := origin + direction * FIRE_DISTANCE
+	var query := PhysicsRayQueryParameters3D.create(origin, end, 3, [self])
+	var result := get_world_3d().direct_space_state.intersect_ray(query)
+	var impact_position: Vector3 = result.position if result else end
+	if game and game.has_method("spawn_explosion"):
+		game.spawn_explosion(impact_position, self, 2.6, damage)
 
 
 func _interact() -> void:
@@ -205,13 +340,14 @@ func register_toilet_flush(toilet_id: int) -> void:
 	if flushed_toilets.has(toilet_id):
 		return
 	flushed_toilets[toilet_id] = true
+	if flushed_toilets.size() == 3:
+		_equip_weapon(WEAPON_RAINBOW_RIFLE)
+	else:
+		var choices := [WEAPON_PISTOL, WEAPON_SHOTGUN, WEAPON_RIFLE, WEAPON_BAZOOKA]
+		choices.erase(current_weapon)
+		_equip_weapon(choices.pick_random())
 	toilet_progress.emit(flushed_toilets.size(), 3)
 	if flushed_toilets.size() == 3:
-		damage = BASE_DAMAGE * 3
-		weapon_material.albedo_color = Color("ff2bd6")
-		weapon_material.emission_enabled = true
-		weapon_material.emission = Color("a000ff")
-		weapon_material.emission_energy_multiplier = 2.2
 		powerup_activated.emit()
 
 
