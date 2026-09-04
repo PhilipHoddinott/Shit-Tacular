@@ -6,10 +6,24 @@ config_version=5
 [application]
 
 config/name="Shit-Tacular"
+config/version="0.1.0-playtest"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 boot_splash/bg_color=Color(0.035, 0.028, 0.05, 1)
 boot_splash/show_image=false
+run/flush_stdout_on_print=true
+
+[autoload]
+
+Diagnostics="*res://scripts/diagnostics.gd"
+
+[debug]
+
+file_logging/enable_file_logging=true
+file_logging/enable_file_logging.pc=true
+file_logging/log_path="user://logs/shit-tacular.log"
+file_logging/max_log_files=10
+settings/crash_handler/message="Shit-Tacular crashed. Restart the game, choose OPEN CRASH LOGS, and send the newest log to the developer."
 
 [display]
 

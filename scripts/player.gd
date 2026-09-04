@@ -19,6 +19,7 @@ const SITTING_CAMERA_HEIGHT := 0.94
 
 var health := MAX_HEALTH
 var damage := BASE_DAMAGE
+var lives_remaining := 1
 var is_alive := true
 var input_enabled := true
 var flushed_toilets: Dictionary = {}
@@ -36,7 +37,6 @@ var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 
 
 func _ready() -> void:
-	name = "Player"
 	collision_layer = 2
 	collision_mask = 1
 	floor_snap_length = 0.25
@@ -256,10 +256,32 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 		sitting_chair = null
 		is_alive = false
 		input_enabled = false
+		collision_layer = 0
+		collision_mask = 0
 		velocity = Vector3.ZERO
 		neck.rotation.z = deg_to_rad(72.0)
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		died.emit(self)
+
+
+func respawn_at(spawn_position: Vector3, yaw: float) -> void:
+	if sitting and is_instance_valid(sitting_chair):
+		sitting_chair.release(self)
+	sitting = false
+	sitting_chair = null
+	health = MAX_HEALTH
+	is_alive = true
+	input_enabled = true
+	collision_layer = 2
+	collision_mask = 1
+	velocity = Vector3.ZERO
+	global_position = spawn_position
+	rotation = Vector3(0.0, yaw, 0.0)
+	neck.rotation = Vector3.ZERO
+	neck.position.y = STANDING_CAMERA_HEIGHT
+	camera.current = true
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	health_changed.emit(health, MAX_HEALTH)
 
 
 func combatant_name() -> String:

@@ -8,6 +8,7 @@ const DAMAGE := 24
 const MOVE_SPEED := 2.8
 
 var health := MAX_HEALTH
+var lives_remaining := 1
 var is_alive := true
 var game: Node
 var bot_number := 1
@@ -19,12 +20,14 @@ var current_path: PackedVector3Array = []
 var path_index := 0
 var body_material: StandardMaterial3D
 var weapon_material: StandardMaterial3D
+var base_body_color := Color.WHITE
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 
 
 func setup(number: int, color: Color) -> void:
 	bot_number = number
 	name = "Bot_%d" % number
+	base_body_color = color
 	body_material = StandardMaterial3D.new()
 	body_material.albedo_color = color
 	body_material.roughness = 0.75
@@ -167,6 +170,21 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 		velocity = Vector3.ZERO
 		rotation.z = deg_to_rad(82.0)
 		died.emit(self)
+
+
+func respawn_at(spawn_position: Vector3, yaw: float) -> void:
+	health = MAX_HEALTH
+	is_alive = true
+	collision_layer = 2
+	collision_mask = 1
+	velocity = Vector3.ZERO
+	global_position = spawn_position
+	rotation = Vector3(0.0, yaw, 0.0)
+	body_material.albedo_color = base_body_color
+	target = null
+	retarget_time = 0.0
+	path_refresh = 0.0
+	fire_time = randf_range(0.65, 1.1)
 
 
 func combatant_name() -> String:
