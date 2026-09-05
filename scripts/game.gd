@@ -26,6 +26,7 @@ var navigation_pending := true
 var navigation_wait := 2
 var ui_health: Label
 var combat_feedback: Control
+var minimap: Control
 var ui_toilets: Label
 var ui_lives: Label
 var ui_prompt: Label
@@ -55,6 +56,11 @@ var banner_time := 0.0
 var round_over := false
 var round_serial := 0
 var death_menu_pending := false
+var loss_root: Control
+var loss_replay_button: Button
+var loss_menu_button: Button
+var loss_note: Label
+var lost_multiplayer := false
 var selected_lives := 1
 var selected_player_count := 4
 var network_port := DEFAULT_NETWORK_PORT
@@ -124,6 +130,9 @@ func _ready() -> void:
 		_test_floor_plans.call_deferred()
 	elif "--qa-combat" in OS.get_cmdline_user_args():
 		_test_combat_behavior.call_deferred()
+	elif "--qa-loss-capture" in OS.get_cmdline_user_args():
+		_start_round()
+		_capture_loss_frame.call_deferred()
 	elif "--qa-multiplayer-menu-capture" in OS.get_cmdline_user_args():
 		_capture_multiplayer_menu_qa_frame.call_deferred()
 	elif "--qa-host-lobby-capture" in OS.get_cmdline_user_args():
@@ -186,6 +195,16 @@ func _capture_qa_frame() -> void:
 	var image := get_viewport().get_texture().get_image()
 	var error := image.save_png(ProjectSettings.globalize_path("res://artifacts/qa_first_person.png"))
 	print("QA_CAPTURE:", error)
+	get_tree().quit()
+
+
+func _capture_loss_frame() -> void:
+	player.apply_damage(999)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://artifacts"))
+	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path("res://artifacts/qa_loss.png"))
 	get_tree().quit()
 
 
@@ -363,6 +382,8 @@ func _finish_qa_network_test() -> void:
 	assert(network_match_started, "Network match must start on every peer")
 	assert(network_players.size() == 2, "Network match must contain two human players")
 	assert(player != null, "Each peer must own a local first-person player")
+	minimap.refresh_map()
+	assert(minimap.visible_combatants().size() == 2, "Both network players must appear on each peer's minimap")
 	var starting_position := player.global_position
 	if multiplayer.is_server():
 		await get_tree().create_timer(0.4).timeout
@@ -395,8 +416,10 @@ func _finish_qa_network_test() -> void:
 				network_players[id].apply_damage(999, player)
 	else:
 		await get_tree().create_timer(0.4).timeout
-		assert(menu_root.visible and player == null and not network_match_started, "A defeated client must leave the match and return to the main menu")
-		print("QA_NETWORK_DEATH_MENU_OK")
+		assert(loss_root.visible and player == null and not network_match_started, "A defeated client must leave the match and see the loss screen")
+		loss_replay_button.pressed.emit()
+		assert(multiplayer_menu_root.visible and not loss_root.visible, "Multiplayer replay must open host/join setup")
+		print("QA_NETWORK_LOSS_SCREEN_OK")
 	await get_tree().create_timer(0.5).timeout
 	get_tree().quit()
 
@@ -409,6 +432,12 @@ func _run_qa_smoke() -> void:
 	_assert_hallway_clearance()
 	assert(APARTMENT_SCALE == 2.0 and _network_spawn_positions()[7].x > 17.0, "Apartment geometry and spawns must use the doubled footprint")
 	assert(player.health == 100, "Player must spawn with 100 health")
+	minimap.refresh_map()
+	assert(minimap.visible_combatants().size() == 4, "Minimap must show the player and all three bots")
+	var map_bot := combatants[1] as ApartmentBot
+	map_bot.is_alive = false
+	assert(minimap.visible_combatants().size() == 3, "Dead actors must disappear from the minimap")
+	map_bot.is_alive = true
 	_assert_health_regeneration()
 	_assert_zoom_and_audio()
 	assert(player.damage == 24, "Pistol must start at 24 damage")
@@ -453,15 +482,23 @@ func _run_qa_smoke() -> void:
 	player.apply_damage(999)
 	assert(not player.is_alive and player.lives_remaining == 0, "A defeated player must spend their only life")
 	await get_tree().process_frame
-	assert(menu_root.visible and not hud_root.visible and player == null and combatants.is_empty(), "Death must return to the menu even with lives remaining")
+	assert(loss_root.visible and not menu_root.visible and not hud_root.visible and player == null and combatants.is_empty(), "Death must display the loss screen")
 	assert(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE and not replay_button.visible, "Death menu must release the mouse and hide replay")
 	assert(get_node_or_null("FloorplanOverlay") != null and get_node_or_null("RoomFloorFinish") == null, "The floor-plan PNG must be the default floor")
+	loss_menu_button.pressed.emit()
+	assert(menu_root.visible and not loss_root.visible, "Main Menu must dismiss the loss screen")
 	_on_single_player_pressed()
+	for combatant in combatants:
+		combatant.set_physics_process(false)
+	player.apply_damage(999)
+	await get_tree().process_frame
+	loss_replay_button.pressed.emit()
+	assert(not loss_root.visible and selected_lives == 2, "Play Again must preserve settings and dismiss the loss screen")
 	for combatant in combatants:
 		combatant.set_physics_process(false)
 	player.input_enabled = false
 	assert(player.health == 100 and player.flushed_toilets.is_empty() and not menu_root.visible, "The menu must start a clean new game")
-	print("QA_DEATH_MENU_OK remaining_lives=ignored restart=clean floorplan=visible")
+	print("QA_LOSS_SCREEN_OK main_menu=working play_again=working settings=preserved")
 	var test_bot := combatants[1] as ApartmentBot
 	test_bot.apply_damage(40, player)
 	test_bot.apply_damage(40, player)
@@ -638,6 +675,9 @@ func _test_floor_plans() -> void:
 			assert(not nav_graph.get_id_path(origin_id,nav_graph.get_closest_point(position)).is_empty(), "All spawns and doorways must share a reachable navigation component: %s %s" % [map_name,position])
 		_start_round()
 		assert(combatants.size() == 4, "Either map must start a match")
+		minimap.refresh_map()
+		for position in _network_spawn_positions():
+			assert(minimap.map_rect.has_point(minimap.map_position(position)), "Minimap must bound every spawn on either floor plan")
 		_clear_combatants()
 		_show_main_menu()
 		print("QA_MAP_OK ",map_name)
@@ -1023,6 +1063,8 @@ func _create_toilet(id: int, position: Vector3, rotation_y: float) -> void:
 
 
 func _start_round() -> void:
+	if loss_root:
+		loss_root.visible = false
 	round_serial += 1
 	Diagnostics.log_event("single_player_round_started", {"lives": selected_lives, "bots": 3})
 	for old_combatant in combatants:
@@ -1182,6 +1224,7 @@ func _on_player_health_changed(current: int, _maximum: int) -> void:
 
 func _return_to_menu_after_death() -> void:
 	# Defer teardown until damage signals and network snapshot application finish.
+	lost_multiplayer = network_match_started
 	_close_network_connection()
 	_clear_combatants()
 	lobby_players.clear()
@@ -1191,7 +1234,22 @@ func _return_to_menu_after_death() -> void:
 	replay_button.visible = false
 	round_over = false
 	death_menu_pending = false
-	_show_main_menu()
+	SoundEffects.stop_all()
+	menu_root.visible = false
+	multiplayer_menu_root.visible = false
+	hud_root.visible = false
+	loss_note.text = "Play Again opens multiplayer setup to host or join another match." if lost_multiplayer else "Try again on %s. Your bot-lives setting is preserved." % selected_floor_plan
+	loss_root.visible = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	loss_replay_button.grab_focus()
+
+
+func _play_again_after_loss() -> void:
+	loss_root.visible = false
+	if lost_multiplayer:
+		_show_multiplayer_menu()
+	else:
+		_start_round()
 
 
 func _on_toilet_progress(current: int, total: int) -> void:
@@ -1287,10 +1345,59 @@ func _create_ui() -> void:
 	hud_root.add_child(crosshair)
 	combat_feedback = preload("res://scripts/combat_feedback.gd").new()
 	hud_root.add_child(combat_feedback)
+	minimap = preload("res://scripts/minimap.gd").new()
+	minimap.game = self
+	hud_root.add_child(minimap)
 
 	_create_main_menu(canvas)
 	_create_multiplayer_menu(canvas)
+	_create_loss_screen(canvas)
 	hud_root.visible = false
+
+
+func _create_loss_screen(canvas: CanvasLayer) -> void:
+	loss_root = Control.new()
+	loss_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	loss_root.visible = false
+	canvas.add_child(loss_root)
+	var background := ColorRect.new()
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.color = Color("17121f")
+	loss_root.add_child(background)
+	var panel := PanelContainer.new()
+	panel.position = Vector2(350,155)
+	panel.size = Vector2(580,410)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("211827")
+	style.border_color = Color("ed5b82")
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(16)
+	style.content_margin_left = 36
+	style.content_margin_right = 36
+	style.content_margin_top = 28
+	style.content_margin_bottom = 28
+	panel.add_theme_stylebox_override("panel",style)
+	loss_root.add_child(panel)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation",20)
+	panel.add_child(content)
+	var title := Label.new()
+	title.text = "YOU LOST"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size",52)
+	title.add_theme_color_override("font_color",Color("ff789a"))
+	content.add_child(title)
+	loss_note = Label.new()
+	loss_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	loss_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	loss_note.add_theme_font_size_override("font_size",18)
+	content.add_child(loss_note)
+	loss_replay_button = _menu_button("PLAY AGAIN")
+	loss_replay_button.pressed.connect(_play_again_after_loss)
+	content.add_child(loss_replay_button)
+	loss_menu_button = _menu_button("MAIN MENU")
+	loss_menu_button.pressed.connect(_show_main_menu)
+	content.add_child(loss_menu_button)
 
 
 func _create_main_menu(canvas: CanvasLayer) -> void:
@@ -1412,7 +1519,7 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	content.add_child(crash_logs_button)
 
 	var note := Label.new()
-	note.text = "You have one life. Death returns to this menu.\nFlush all three toilets for the rainbow rifle."
+	note.text = "You have one life. Lose, then retry or return here.\nFlush all three toilets for the rainbow rifle."
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 15)
@@ -1620,6 +1727,8 @@ func _menu_button(text: String) -> Button:
 
 
 func _show_main_menu() -> void:
+	if loss_root:
+		loss_root.visible = false
 	SoundEffects.stop_all()
 	menu_root.visible = true
 	multiplayer_menu_root.visible = false

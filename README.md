@@ -20,7 +20,7 @@ You can also launch the project from PowerShell:
 .\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64.exe --path .
 ```
 
-Choose 1, 2, 3, or 5 **bot lives** from the main menu. Every combatant begins with 100 health. Human players have one life: your death returns you directly to the main menu; choose Single Player to start a fresh game. Bots respawn while lives remain. Multiplayer humans also have one life; death leaves the match, and a host's death closes the session. The last player standing wins.
+Choose 1, 2, 3, or 5 **bot lives** from the main menu. Every combatant begins with 100 health. Human players have one life: your death opens a loss screen with **Play Again** and **Main Menu**. Play Again starts a fresh match on the same floor plan with the same bot-lives setting. Bots respawn while lives remain. Multiplayer humans also have one life; death leaves the match, and a host's death closes the session. On the multiplayer loss screen, Play Again opens host/join setup for the next match. The last player standing wins.
 
 Players and bots regenerate **2 health per second after 5 seconds without taking damage**, up to 100 health. Taking another hit restarts the delay. Healing stops on death or when the round ends; multiplayer healing is controlled by the host.
 
@@ -31,6 +31,8 @@ Confirmed hits flash a white hit marker; lethal hits flash gold. Incoming damage
 Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and lock in the glowing rainbow rifle, which cycles colors and deals 40 damage per bullet for the rest of the round, including after respawning.
 
 ## Controls
+
+The bottom-left minimap shows the selected floor plan. Your cyan arrow indicates your position and facing direction; red dots show all other living players or bots, including through walls. Eliminated combatants disappear, and respawning bots reappear.
 
 | Control | Action |
 | --- | --- |
