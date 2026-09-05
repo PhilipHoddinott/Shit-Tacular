@@ -20,11 +20,13 @@ You can also launch the project from PowerShell:
 .\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64.exe --path .
 ```
 
-Choose 1, 2, 3, or 5 lives per player from the main menu. Every combatant begins with 100 health. Your death returns you directly to the main menu, even if you have lives remaining; choose Single Player to start a fresh game. Bots respawn while lives remain. In multiplayer, death leaves the match; if the host dies, the hosted session closes. The last player standing wins.
+Choose 1, 2, 3, or 5 **bot lives** from the main menu. Every combatant begins with 100 health. Human players have one life: your death returns you directly to the main menu; choose Single Player to start a fresh game. Bots respawn while lives remain. Multiplayer humans also have one life; death leaves the match, and a host's death closes the session. The last player standing wins.
 
 Players and bots regenerate **2 health per second after 5 seconds without taking damage**, up to 100 health. Taking another hit restarts the delay. Healing stops on death or when the round ends; multiplayer healing is controlled by the host.
 
 Hold right mouse to zoom while aiming; release it to return to normal view. Rifle zoom is stronger than pistol, shotgun, or bazooka zoom, and mouse sensitivity scales with magnification. Original synthesized spatial effects cover gunfire, impacts, explosions, toilet flushes, weapon rewards, and the rainbow power-up. Sounds are shared with multiplayer peers and require no downloads.
+
+Confirmed hits flash a white hit marker; lethal hits flash gold. Incoming damage flashes the screen edges and shows the attack direction. Weapons have centered aiming sights, subtle movement sway, and recoil. Bots patrol, investigate nearby gunshots, pursue the last place they saw an opponent, and seek reachable cover at low health. Navigation is checked against walls and furniture on the selected map, and defeated bots animate a fall before respawning or remaining eliminated.
 
 Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and lock in the glowing rainbow rifle, which cycles colors and deals 40 damage per bullet for the rest of the round, including after respawning.
 

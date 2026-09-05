@@ -228,6 +228,8 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 		return
 	regeneration.reset()
 	health = maxi(health - amount, 0)
+	if game:
+		game.report_combat_hit(self,_attacker,health == 0)
 	if is_local_player:
 		health_changed.emit(health, MAX_HEALTH)
 	if health > 0:

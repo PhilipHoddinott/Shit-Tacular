@@ -40,6 +40,7 @@ var fire_cooldown := 0.0
 var recoil := 0.0
 var rainbow_time := 0.0
 var hip_weapon_position := Vector3.ZERO
+var movement_phase := 0.0
 var sitting := false
 var sitting_chair: Node
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
@@ -160,7 +161,9 @@ func _rebuild_weapon_visual() -> void:
 			_add_weapon_box(Vector3(0.0, -0.08, 0.18), Vector3(0.17, 0.23, 0.34), accent, Vector3(-0.16, 0.0, 0.0))
 			_add_weapon_box(Vector3(0.0, -0.2, -0.24), Vector3(0.14, 0.28, 0.19), accent, Vector3(0.18, 0.0, 0.0))
 			_add_weapon_cylinder(Vector3(0.0, 0.01, -0.73), 0.038, 0.64, accent)
-			_add_weapon_cylinder(Vector3(0.0, 0.15, -0.2), 0.045, 0.32, accent, Vector3(0.0, 0.0, PI * 0.5))
+			for sight_x in [-0.05,0.05]:
+				_add_weapon_box(Vector3(sight_x,0.15,0.02),Vector3(0.018,0.065,0.035),accent)
+			_add_weapon_box(Vector3(0,0.15,-0.72),Vector3(0.014,0.06,0.025),accent)
 			muzzle_z = -1.08
 		WEAPON_BAZOOKA:
 			weapon_root.position = Vector3(0.3, -0.27, -0.64)
@@ -177,6 +180,10 @@ func _rebuild_weapon_visual() -> void:
 			_add_weapon_box(Vector3(0.0, -0.19, 0.01), Vector3(0.14, 0.32, 0.15), weapon_material, Vector3(-0.16, 0.0, 0.0))
 			_add_weapon_cylinder(Vector3(0.0, 0.035, -0.47), 0.045, 0.31, accent)
 
+	if current_weapon not in [WEAPON_RIFLE,WEAPON_RAINBOW_RIFLE]:
+		for sight_x in [-0.035,0.035]:
+			_add_weapon_box(Vector3(sight_x,0.13,0.01),Vector3(0.012,0.03,0.025),accent)
+		_add_weapon_box(Vector3(0,0.13,muzzle_z+0.10),Vector3(0.012,0.03,0.025),weapon_material)
 	muzzle_flash = OmniLight3D.new()
 	muzzle_flash.light_color = Color("ffc36a")
 	muzzle_flash.light_energy = 0.0
@@ -284,9 +291,14 @@ func _update_aim(delta: float) -> void:
 	camera.fov = lerpf(camera.fov, target_fov, blend)
 	var target_position := hip_weapon_position
 	if aiming:
-		target_position.x *= 0.35
-		target_position.y -= 0.04
-		target_position.z -= 0.15
+		target_position.x = 0.0
+		target_position.y = (-0.18 if current_weapon in [WEAPON_RIFLE,WEAPON_RAINBOW_RIFLE] else -0.145) * weapon_root.scale.y
+		target_position.z -= 0.20
+	var moving := minf(Vector2(velocity.x,velocity.z).length()/WALK_SPEED,1.5) if is_on_floor() and not sitting else 0.0
+	movement_phase += delta * 9.0 * moving
+	var sway := 0.002 if aiming else 0.012
+	target_position += Vector3(sin(movement_phase)*sway,absf(cos(movement_phase))*sway,0)*moving
+	target_position.z += recoil * 0.12
 	weapon_root.position = weapon_root.position.lerp(target_position, blend)
 
 
@@ -425,6 +437,8 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 		return
 	regeneration.reset()
 	health = maxi(health - amount, 0)
+	if game:
+		game.report_combat_hit(self,_attacker,health == 0)
 	health_changed.emit(health, MAX_HEALTH)
 	if health <= 0:
 		if sitting and is_instance_valid(sitting_chair):

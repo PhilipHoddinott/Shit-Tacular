@@ -22,6 +22,11 @@ var path_index := 0
 var body_material: StandardMaterial3D
 var weapon_material: StandardMaterial3D
 var base_body_color := Color.WHITE
+var behavior := "patrol"
+var destination := Vector3.ZERO
+var memory_time := 0.0
+var cover_time := 0.0
+var death_tween: Tween
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 
 
@@ -81,44 +86,81 @@ func _create_body() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if not is_alive or not game:
+	if not is_alive or not game or game.round_over or game.navigation_pending:
 		return
-	if not game.round_over:
-		health = regeneration.tick(delta, health, is_alive)
+	health = regeneration.tick(delta, health, is_alive)
 	if not is_on_floor():
 		velocity.y -= gravity * delta
-
 	retarget_time -= delta
 	path_refresh -= delta
 	fire_time -= delta
-	if retarget_time <= 0.0 or not is_instance_valid(target) or not target.get("is_alive"):
-		target = game.get_closest_opponent(self)
-		retarget_time = 0.55
-	if not target:
-		velocity.x = move_toward(velocity.x, 0.0, delta * 12.0)
-		velocity.z = move_toward(velocity.z, 0.0, delta * 12.0)
-		move_and_slide()
-		return
-
-	var aim_position := target.global_position + Vector3.UP * 1.05
-	var can_see := _has_line_of_sight(aim_position)
-	var flat_distance := Vector2(global_position.x - target.global_position.x, global_position.z - target.global_position.z).length()
-	if can_see:
-		look_at(Vector3(target.global_position.x, global_position.y, target.global_position.z), Vector3.UP)
-		if flat_distance > 4.5:
-			_move_toward(target.global_position, delta)
-		else:
-			velocity.x = move_toward(velocity.x, 0.0, delta * 15.0)
-			velocity.z = move_toward(velocity.z, 0.0, delta * 15.0)
-		if fire_time <= 0.0 and flat_distance < 16.0:
-			_shoot(aim_position)
+	memory_time = maxf(0.0,memory_time-delta)
+	cover_time = maxf(0.0,cover_time-delta)
+	if retarget_time <= 0.0:
+		target = _find_visible_opponent()
+		retarget_time = 0.25
+	var can_see: bool = is_instance_valid(target) and target.is_alive and _has_line_of_sight(target.global_position+Vector3.UP*1.05)
+	if can_see and cover_time <= 0.0:
+		memory_time = 4.0
+		destination = target.global_position
+		behavior = "engage"
+		if health <= 44:
+			var cover: Vector3 = game.find_cover_position(global_position,target.global_position)
+			if cover.distance_to(global_position) > 0.8:
+				destination = cover
+				cover_time = 7.0
+				behavior = "cover"
+				path_refresh = 0.0
+	if behavior == "cover" and cover_time <= 0.0:
+		behavior = "investigate"
+	if behavior == "engage" and not can_see:
+		behavior = "investigate"
+	if not can_see and memory_time <= 0.0 and cover_time <= 0.0:
+		if behavior != "patrol" or global_position.distance_to(destination) < 0.7 or current_path.is_empty():
+			destination = game.choose_patrol_position(global_position)
+			path_refresh = 0.0
+		behavior = "patrol"
+	if behavior == "engage" and can_see:
+		look_at(Vector3(target.global_position.x,global_position.y,target.global_position.z),Vector3.UP)
+		if fire_time <= 0.0:
+			_shoot(target.global_position+Vector3.UP*1.05)
+		velocity.x = move_toward(velocity.x,0.0,delta*12.0)
+		velocity.z = move_toward(velocity.z,0.0,delta*12.0)
 	else:
 		if path_refresh <= 0.0:
-			current_path = game.find_apartment_path(global_position, target.global_position)
+			current_path = game.find_apartment_path(global_position,destination)
 			path_index = 0
-			path_refresh = 0.75
+			path_refresh = 1.0
 		_follow_path(delta)
 	move_and_slide()
+
+
+func _find_visible_opponent() -> Node3D:
+	var nearest: Node3D
+	var best := 18.0
+	for candidate in game.combatants:
+		if candidate == self or not is_instance_valid(candidate) or not candidate.is_alive:
+			continue
+		var offset: Vector3 = candidate.global_position-global_position
+		if offset.length() >= best:
+			continue
+		if behavior == "patrol" and (-global_basis.z).dot(offset.normalized()) < 0.15:
+			continue
+		var query := PhysicsRayQueryParameters3D.create(global_position+Vector3.UP*1.3,candidate.global_position+Vector3.UP*1.05,3,[self])
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		if hit and hit.collider == candidate:
+			nearest = candidate
+			best = offset.length()
+	return nearest
+
+
+func hear_gunshot(location: Vector3) -> void:
+	if not is_alive or behavior in ["engage","cover"] or global_position.distance_to(location) > 14.0 or global_position.distance_to(location) < 1.5:
+		return
+	destination = location
+	memory_time = 5.0
+	behavior = "investigate"
+	path_refresh = 0.0
 
 
 func _move_toward(destination: Vector3, delta: float) -> void:
@@ -127,18 +169,23 @@ func _move_toward(destination: Vector3, delta: float) -> void:
 	if flat.length() < 0.1:
 		return
 	flat = flat.normalized()
+	rotation.y = lerp_angle(rotation.y,atan2(-flat.x,-flat.z),minf(1.0,delta*7.0))
 	velocity.x = move_toward(velocity.x, flat.x * MOVE_SPEED, delta * 12.0)
 	velocity.z = move_toward(velocity.z, flat.z * MOVE_SPEED, delta * 12.0)
 
 
 func _follow_path(delta: float) -> void:
 	if current_path.is_empty():
-		_move_toward(target.global_position, delta)
+		velocity.x = move_toward(velocity.x,0.0,delta*12.0)
+		velocity.z = move_toward(velocity.z,0.0,delta*12.0)
 		return
-	while path_index < current_path.size() and global_position.distance_to(current_path[path_index]) < 0.65:
+	while path_index < current_path.size() and global_position.distance_to(current_path[path_index]) < 0.28:
 		path_index += 1
 	if path_index < current_path.size():
 		_move_toward(current_path[path_index], delta)
+	else:
+		velocity.x = move_toward(velocity.x,0.0,delta*12.0)
+		velocity.z = move_toward(velocity.z,0.0,delta*12.0)
 
 
 func _has_line_of_sight(aim_position: Vector3) -> bool:
@@ -167,17 +214,31 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 		return
 	regeneration.reset()
 	health = maxi(health - amount, 0)
+	if game:
+		game.report_combat_hit(self,_attacker,health == 0)
+	if _attacker is Node3D:
+		destination = _attacker.global_position
+		memory_time = 5.0
+		behavior = "investigate"
 	body_material.albedo_color = body_material.albedo_color.lerp(Color.WHITE, 0.25)
+	create_tween().tween_property(body_material,"albedo_color",base_body_color,0.2)
 	if health <= 0:
 		is_alive = false
 		collision_layer = 0
 		collision_mask = 0
 		velocity = Vector3.ZERO
-		rotation.z = deg_to_rad(82.0)
+		death_tween = create_tween()
+		death_tween.tween_property(self,"rotation:z",deg_to_rad(82.0),0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		died.emit(self)
 
 
 func respawn_at(spawn_position: Vector3, yaw: float) -> void:
+	if death_tween and death_tween.is_valid():
+		death_tween.kill()
+	behavior = "patrol"
+	current_path.clear()
+	memory_time = 0.0
+	cover_time = 0.0
 	health = MAX_HEALTH
 	regeneration.reset()
 	is_alive = true

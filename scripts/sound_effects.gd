@@ -4,6 +4,15 @@ const SAMPLE_RATE := 22050
 const MAX_VOICES := 24
 var streams: Dictionary = {}
 
+func stop_all() -> void:
+	for voice in get_children():
+		voice.stop()
+		voice.queue_free()
+
+func _exit_tree() -> void:
+	for voice in get_children():
+		voice.stop()
+
 func _ready() -> void:
 	for effect in ["pistol", "shotgun", "rifle", "rainbow_rifle", "bazooka", "impact", "explosion", "flush", "equip", "powerup", "hurt"]:
 		streams[effect] = _synthesize(effect)

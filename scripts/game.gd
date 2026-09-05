@@ -22,7 +22,10 @@ var player: FpsPlayer
 var combatants: Array[Node] = []
 var spawn_positions: Array[Vector3] = []
 var nav_graph := AStar3D.new()
+var navigation_pending := true
+var navigation_wait := 2
 var ui_health: Label
+var combat_feedback: Control
 var ui_toilets: Label
 var ui_lives: Label
 var ui_prompt: Label
@@ -50,6 +53,7 @@ var upnp_checkbox: CheckBox
 var crash_logs_button: Button
 var banner_time := 0.0
 var round_over := false
+var round_serial := 0
 var death_menu_pending := false
 var selected_lives := 1
 var selected_player_count := 4
@@ -118,6 +122,8 @@ func _ready() -> void:
 		_capture_zoom_frame.call_deferred()
 	elif "--qa-maps" in OS.get_cmdline_user_args():
 		_test_floor_plans.call_deferred()
+	elif "--qa-combat" in OS.get_cmdline_user_args():
+		_test_combat_behavior.call_deferred()
 	elif "--qa-multiplayer-menu-capture" in OS.get_cmdline_user_args():
 		_capture_multiplayer_menu_qa_frame.call_deferred()
 	elif "--qa-host-lobby-capture" in OS.get_cmdline_user_args():
@@ -151,6 +157,11 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if navigation_pending:
+		if navigation_wait > 0:
+			navigation_wait -= 1
+		else:
+			_rebuild_walkable_navigation()
 	if not network_match_started or not multiplayer.is_server():
 		return
 	network_state_time -= delta
@@ -267,6 +278,7 @@ func _capture_zoom_frame() -> void:
 	player.position = _expanded(Vector3(6.8, 0.05, 5.55))
 	player.rotation.y = 0.0
 	player.equip_weapon(FpsPlayer.WEAPON_RIFLE)
+	ui_toilets.text = "TOILETS  0 / 3    RIFLE  20"
 	Input.action_press("aim")
 	player._update_aim(1.0)
 	ui_banner.text = ""
@@ -416,7 +428,7 @@ func _run_qa_smoke() -> void:
 	assert(lives_selector.get_item_metadata(0) == 1 and lives_selector.get_item_metadata(3) == 5, "Lives choices must range from one to five")
 	assert(upnp_checkbox.button_pressed, "Automatic UDP port mapping must be enabled by default")
 	assert(_upnp_error_message(UPNP.UPNP_RESULT_NO_GATEWAY) == "no compatible router was found", "UPnP failures must have a useful fallback message")
-	assert(player.lives_remaining == 2, "The player must receive the menu's selected lives")
+	assert(player.lives_remaining == 1, "Humans have one life; the selector controls bots")
 	assert(get_tree().get_nodes_in_group("sittable_chairs").size() == 4, "All four dining chairs must be sittable")
 	var test_chair := get_tree().get_first_node_in_group("sittable_chairs") as SittableChair
 	assert(test_chair != null, "At least one chair must be sittable")
@@ -439,7 +451,7 @@ func _run_qa_smoke() -> void:
 	assert(player.weapon_material.albedo_color != rainbow_before, "The rainbow rifle must slowly cycle its color")
 	assert(ui_banner.text == "TRIPLE-SHIT!", "Power-up banner must use the requested wording")
 	player.apply_damage(999)
-	assert(not player.is_alive and player.lives_remaining == 1, "A defeated player must spend one life")
+	assert(not player.is_alive and player.lives_remaining == 0, "A defeated player must spend their only life")
 	await get_tree().process_frame
 	assert(menu_root.visible and not hud_root.visible and player == null and combatants.is_empty(), "Death must return to the menu even with lives remaining")
 	assert(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE and not replay_button.visible, "Death menu must release the mouse and hide replay")
@@ -472,7 +484,7 @@ func _run_qa_smoke() -> void:
 	await get_tree().process_frame
 	assert(not round_over and not replay_button.visible and combatants.size() == 4, "Replay button must start a fresh round")
 	for combatant in combatants:
-		assert(combatant.lives_remaining == 2, "Replay must preserve the selected lives setting")
+		assert(combatant.lives_remaining == (1 if combatant == player else 2), "Replay must preserve bot lives and give the human one life")
 	print("QA_SMOKE_OK apartment_scale=2 weapons=4 rainbow_rifle_damage=40 toilets=3 chairs=sittable lives=respawn replay=visible")
 	get_tree().quit()
 
@@ -579,6 +591,8 @@ func _load_floor_plan(map_name: String) -> void:
 			node.queue_free()
 	map_nodes.clear()
 	nav_graph.clear()
+	navigation_pending = true
+	navigation_wait = 2
 	selected_floor_plan = map_name if map_name in ["basment", "2nd floor"] else "basment"
 	var existing := get_children()
 	_setup_world()
@@ -602,6 +616,8 @@ func _test_floor_plans() -> void:
 		_load_floor_plan(map_name)
 		await get_tree().physics_frame
 		await get_tree().physics_frame
+		await get_tree().physics_frame
+		await get_tree().physics_frame
 		var capsule := CapsuleShape3D.new()
 		capsule.radius = 0.25
 		capsule.height = 1.5
@@ -617,11 +633,62 @@ func _test_floor_plans() -> void:
 		assert(get_node_or_null("FloorplanOverlay") != null, "Both maps must display their floor plan")
 		assert(get_tree().get_nodes_in_group("sittable_chairs").size() == 4, "Switching maps must replace furniture")
 		assert(nav_graph.get_point_count() > 0, "Each map requires navigation")
+		var origin_id := nav_graph.get_closest_point(_network_spawn_positions()[0])
+		for position in positions:
+			assert(not nav_graph.get_id_path(origin_id,nav_graph.get_closest_point(position)).is_empty(), "All spawns and doorways must share a reachable navigation component: %s %s" % [map_name,position])
 		_start_round()
 		assert(combatants.size() == 4, "Either map must start a match")
 		_clear_combatants()
 		_show_main_menu()
 		print("QA_MAP_OK ",map_name)
+	get_tree().quit()
+
+
+func _test_combat_behavior() -> void:
+	for map_name in ["basment","2nd floor"]:
+		_load_floor_plan(map_name)
+		_start_round()
+		for c in combatants:
+			c.set_physics_process(false)
+		var bot := combatants[1] as ApartmentBot
+		for index in [2,3]:
+			combatants[index].collision_layer = 0
+			combatants[index].is_alive = false
+		player.position = SecondFloor.point(320,650)+Vector3.UP*.05 if map_name == "2nd floor" else _expanded(Vector3(6.8,.05,4.6))
+		bot.position = SecondFloor.point(320,550)+Vector3.UP*.05 if map_name == "2nd floor" else _expanded(Vector3(6.8,.05,5.2))
+		bot.look_at(Vector3(player.position.x,bot.position.y,player.position.z))
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		assert(bot._find_visible_opponent() == player, "Bots must perceive a visible opponent")
+		bot.hear_gunshot(player.position+Vector3.UP)
+		assert(bot.behavior == "investigate" and bot.memory_time > 0.0, "Gunfire must trigger investigation")
+		bot.health = 35
+		bot._physics_process(.1)
+		assert(bot.behavior == "cover" and bot.destination.distance_to(bot.position) > .8, "A wounded bot must seek available cover")
+		assert(not find_apartment_path(bot.position,bot.destination).is_empty(), "Chosen cover must be reachable")
+		var saved := combatants.duplicate()
+		combatants = [bot]
+		bot.health = 100
+		bot.behavior = "investigate"
+		bot.memory_time = 0
+		bot.cover_time = 0
+		bot.retarget_time = 0
+		bot._physics_process(.1)
+		assert(bot.behavior == "patrol" and not bot.current_path.is_empty(), "Bots must patrol after losing a target")
+		combatants.assign(saved)
+		combat_feedback.hit_time = 0
+		bot.apply_damage(1,player)
+		assert(combat_feedback.hit_time > 0, "Confirmed hits must show a hit marker")
+		player.apply_damage(1,bot)
+		assert(combat_feedback.damage_time > 0, "Incoming damage must show directional feedback")
+		bot.apply_damage(999,player)
+		assert(combat_feedback.confirmed_kill, "Lethal hits must show the gold kill marker")
+		_clear_combatants()
+		_show_main_menu()
+		print("QA_COMBAT_OK ",map_name," perception investigation cover patrol hit damage kill")
+	await get_tree().create_timer(0.2).timeout
 	get_tree().quit()
 
 
@@ -895,7 +962,7 @@ func _build_furniture() -> void:
 	_create_box("KitchenCounter", _expanded(Vector3(6.34, 0.48, 7.97)), Vector3(2.15, 0.96, 0.58), white_material, true)
 	_create_box("KitchenCounter", _expanded(Vector3(5.872, 0.48, 7.55)), Vector3(0.55, 0.96, 1.25), white_material, true)
 	_create_box("KitchenIsland", _expanded(Vector3(6.4, 0.48, 7.01)), Vector3(1.55, 0.96, 0.68), _material(Color("d8d1c2"), 0.45), true)
-	_create_box("CartoonFridge", _expanded(Vector3(7.09, 0.95, 7.55)), Vector3(0.62, 1.9, 0.72), _material(Color("8ed8ef"), 0.38), true)
+	_create_box("CartoonFridge", _expanded(Vector3(7.4, 0.95, 7.55)), Vector3(0.62, 1.9, 0.72), _material(Color("8ed8ef"), 0.38), true)
 
 	# Bathroom sinks and tubs to make all three rooms recognizable.
 	_create_box("Vanity", _expanded(Vector3(3.85, 0.46, 2.76)), Vector3(0.72, 0.92, 0.42), white_material, true)
@@ -956,6 +1023,7 @@ func _create_toilet(id: int, position: Vector3, rotation_y: float) -> void:
 
 
 func _start_round() -> void:
+	round_serial += 1
 	Diagnostics.log_event("single_player_round_started", {"lives": selected_lives, "bots": 3})
 	for old_combatant in combatants:
 		if is_instance_valid(old_combatant):
@@ -975,7 +1043,7 @@ func _start_round() -> void:
 	player = PlayerScript.new() as FpsPlayer
 	player.name = "Player"
 	player.game = self
-	player.lives_remaining = selected_lives
+	player.lives_remaining = 1
 	player.position = available_spawns.pop_back()
 	player.health_changed.connect(_on_player_health_changed)
 	player.toilet_progress.connect(_on_toilet_progress)
@@ -997,7 +1065,7 @@ func _start_round() -> void:
 
 	ui_health.text = "HEALTH  100"
 	ui_toilets.text = "TOILETS  0 / 3    PISTOL  24"
-	ui_lives.text = "LIVES  %d" % selected_lives
+	ui_lives.text = "LIFE  1"
 	ui_toilets.modulate = Color.WHITE
 	_show_banner("LAST ONE STANDING", 2.4)
 
@@ -1016,6 +1084,7 @@ func get_closest_opponent(requester: Node3D) -> Node3D:
 
 
 func _on_combatant_died(combatant: Node) -> void:
+	var death_round := round_serial
 	combatant.lives_remaining = maxi(combatant.lives_remaining - 1, 0)
 	Diagnostics.log_event("combatant_died", {
 		"name": combatant.combatant_name(),
@@ -1029,14 +1098,15 @@ func _on_combatant_died(combatant: Node) -> void:
 	var contenders := _get_remaining_contenders()
 	if contenders.size() <= 1:
 		await get_tree().create_timer(0.15).timeout
-		_finish_round(contenders)
+		if death_round == round_serial:
+			_finish_round(contenders)
 		return
 
 	if combatant.lives_remaining > 0:
 		if combatant == player:
 			_show_banner("OOPS!\nRESPAWNING...", 1.1)
 		await get_tree().create_timer(1.1).timeout
-		if not round_over and is_instance_valid(combatant):
+		if death_round == round_serial and not round_over and is_instance_valid(combatant):
 			combatant.respawn_at(_choose_respawn_position(combatant), rng.randf_range(-PI, PI))
 			Diagnostics.log_event("combatant_respawned", {"name": combatant.combatant_name(), "lives_remaining": combatant.lives_remaining, "networked": network_match_started})
 			if combatant == player:
@@ -1199,7 +1269,13 @@ func _create_ui() -> void:
 	replay_button.position = Vector2(500, 390)
 	replay_button.size = Vector2(280, 64)
 	replay_button.visible = false
-	replay_button.pressed.connect(_start_round)
+	replay_button.pressed.connect(func():
+		if network_match_started:
+			if is_network_host:
+				_start_network_match()
+		else:
+			_start_round()
+	)
 	hud_root.add_child(replay_button)
 
 	var crosshair := Label.new()
@@ -1209,6 +1285,8 @@ func _create_ui() -> void:
 	crosshair.position = Vector2(633, 343)
 	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hud_root.add_child(crosshair)
+	combat_feedback = preload("res://scripts/combat_feedback.gd").new()
+	hud_root.add_child(combat_feedback)
 
 	_create_main_menu(canvas)
 	_create_multiplayer_menu(canvas)
@@ -1242,6 +1320,10 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	panel.size = Vector2(550, 660)
 	var panel_style := StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.045, 0.035, 0.065, 0.96)
+	panel_style.content_margin_left = 30
+	panel_style.content_margin_right = 30
+	panel_style.content_margin_top = 24
+	panel_style.content_margin_bottom = 24
 	panel_style.border_color = Color("c52cae")
 	panel_style.set_border_width_all(2)
 	panel_style.corner_radius_top_left = 14
@@ -1284,7 +1366,7 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	var lives_row := HBoxContainer.new()
 	lives_row.add_theme_constant_override("separation", 20)
 	var lives_label := Label.new()
-	lives_label.text = "LIVES PER PLAYER"
+	lives_label.text = "BOT LIVES"
 	lives_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lives_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lives_label.add_theme_font_size_override("font_size", 18)
@@ -1330,7 +1412,7 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	content.add_child(crash_logs_button)
 
 	var note := Label.new()
-	note.text = "A previous crash log was found. Open the logs and send the newest file." if Diagnostics.previous_crash_detected else "Flush all three toilets to unlock triple damage."
+	note.text = "You have one life. Death returns to this menu.\nFlush all three toilets for the rainbow rifle."
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 15)
@@ -1538,6 +1620,7 @@ func _menu_button(text: String) -> Button:
 
 
 func _show_main_menu() -> void:
+	SoundEffects.stop_all()
 	menu_root.visible = true
 	multiplayer_menu_root.visible = false
 	hud_root.visible = false
@@ -1719,7 +1802,7 @@ func _receive_lobby_state(players: Dictionary, player_limit: int, lives: int, po
 		if "--qa-network-host" in OS.get_cmdline_user_args() and lobby_players.size() == selected_player_count:
 			_start_network_match.call_deferred()
 	else:
-		network_status.text = "Connected. Waiting for the host to start.  •  %d lives" % selected_lives
+		network_status.text = "Connected. Waiting for the host to start.  •  1 life per player"
 
 
 func _start_network_match() -> void:
@@ -1763,7 +1846,7 @@ func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int,
 		var network_player := NetworkPlayerScript.new() as NetworkFpsPlayer
 		network_player.setup_network(id, str(player_names[id]), self, chosen_spawns[index])
 		network_player.game = self
-		network_player.lives_remaining = selected_lives
+		network_player.lives_remaining = 1
 		add_child(network_player)
 		combatants.append(network_player)
 		network_players[id] = network_player
@@ -1780,7 +1863,7 @@ func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int,
 	ui_health.text = "HEALTH  100"
 	ui_toilets.text = "TOILETS  0 / 3    PISTOL  24"
 	ui_toilets.modulate = Color.WHITE
-	ui_lives.text = "LIVES  %d" % selected_lives
+	ui_lives.text = "LIFE  1"
 	_show_banner("LAST ONE STANDING", 2.4)
 	if "--qa-network-host" in OS.get_cmdline_user_args() or "--qa-network-client" in OS.get_cmdline_user_args():
 		_finish_qa_network_test.call_deferred()
@@ -1879,6 +1962,7 @@ func _remove_network_player(disconnected_peer_id: int) -> void:
 
 
 func _clear_combatants() -> void:
+	round_serial += 1
 	for old_combatant in combatants:
 		if is_instance_valid(old_combatant):
 			old_combatant.queue_free()
@@ -2115,7 +2199,39 @@ func _show_banner(text: String, duration: float) -> void:
 	banner_time = duration
 
 
+func report_combat_hit(victim: Node3D, attacker: Node, killed: bool) -> void:
+	var source_position: Vector3 = attacker.global_position if attacker is Node3D else victim.global_position
+	if network_match_started:
+		if multiplayer.is_server():
+			var attacker_id: int = attacker.peer_id if attacker is NetworkFpsPlayer else 0
+			var victim_id: int = victim.peer_id if victim is NetworkFpsPlayer else 0
+			_receive_combat_feedback.rpc(victim_id,attacker_id,source_position,killed)
+	else:
+		_present_combat_feedback(victim == player,attacker == player,source_position,killed)
+
+
+@rpc("authority", "call_local", "reliable")
+func _receive_combat_feedback(victim_id: int, attacker_id: int, source_position: Vector3, killed: bool) -> void:
+	var local_id := multiplayer.get_unique_id()
+	_present_combat_feedback(victim_id == local_id,attacker_id == local_id,source_position,killed)
+
+
+func _present_combat_feedback(was_hurt: bool, scored_hit: bool, source_position: Vector3, killed: bool) -> void:
+	if not player or not combat_feedback:
+		return
+	if scored_hit:
+		combat_feedback.show_hit(killed)
+	if was_hurt:
+		var direction: Vector3 = player.global_basis.inverse() * (source_position-player.global_position)
+		combat_feedback.show_damage(Vector2(direction.x,direction.z))
+		SoundEffects.play_effect("hurt",player.global_position)
+
+
 func emit_world_sound(effect: String, position: Vector3) -> void:
+	if effect in ["pistol","rifle","rainbow_rifle","shotgun","bazooka"]:
+		for combatant in combatants:
+			if combatant is ApartmentBot and combatant.is_alive:
+				combatant.hear_gunshot(position)
 	if network_match_started:
 		if multiplayer.is_server():
 			_play_world_sound.rpc(effect, position)
@@ -2208,11 +2324,85 @@ func _build_navigation_graph() -> void:
 		nav_graph.connect_points(edge[0], edge[1])
 
 
+func _walk_query(position: Vector3) -> PhysicsShapeQueryParameters3D:
+	var query := PhysicsShapeQueryParameters3D.new()
+	var capsule := CapsuleShape3D.new()
+	capsule.radius = 0.28
+	capsule.height = 1.5
+	query.shape = capsule
+	query.collision_mask = 1
+	query.transform = Transform3D(Basis.IDENTITY,position+Vector3.UP*0.78)
+	return query
+
+
+func _can_walk(from: Vector3, to: Vector3) -> bool:
+	var query := _walk_query(from)
+	query.motion = to-from
+	var result := get_world_3d().direct_space_state.cast_motion(query)
+	return result.size() == 2 and result[0] >= 0.999
+
+
+func _rebuild_walkable_navigation() -> void:
+	navigation_pending = false
+	nav_graph.clear()
+	var cells: Dictionary = {}
+	var bounds := Vector2(33.6,18.9) if selected_floor_plan == "2nd floor" else Vector2(19.8,22.6)
+	var step := 0.45
+	for x in range(int(bounds.x/step)+1):
+		for z in range(int(bounds.y/step)+1):
+			var p := Vector3(x*step+step*.5,0.05,z*step+step*.5)
+			if get_world_3d().direct_space_state.intersect_shape(_walk_query(p),1).is_empty():
+				var id := nav_graph.get_point_count()
+				cells[Vector2i(x,z)] = id
+				nav_graph.add_point(id,p)
+	for cell: Vector2i in cells:
+		for offset in [Vector2i(1,0),Vector2i(0,1)]:
+			if cells.has(cell+offset):
+				var a: int = cells[cell]
+				var b: int = cells[cell+offset]
+				if _can_walk(nav_graph.get_point_position(a),nav_graph.get_point_position(b)):
+					nav_graph.connect_points(a,b)
+
+
+func choose_patrol_position(from: Vector3) -> Vector3:
+	var ids := nav_graph.get_point_ids()
+	if ids.is_empty():
+		return from
+	var start := nav_graph.get_closest_point(from)
+	for attempt in range(30):
+		var id: int = ids[rng.randi_range(0,ids.size()-1)]
+		var position := nav_graph.get_point_position(id)
+		if from.distance_to(position) > 2.0 and not nav_graph.get_id_path(start,id).is_empty():
+			return position
+	return from
+
+
+func find_cover_position(from: Vector3, threat: Vector3) -> Vector3:
+	var best := from
+	var best_distance := 8.0
+	var start := nav_graph.get_closest_point(from)
+	for id in nav_graph.get_point_ids():
+		var candidate := nav_graph.get_point_position(id)
+		var distance := from.distance_to(candidate)
+		if distance < 1.0 or distance >= best_distance:
+			continue
+		var query := PhysicsRayQueryParameters3D.create(candidate+Vector3.UP*1.2,threat+Vector3.UP*1.2,1)
+		if not get_world_3d().direct_space_state.intersect_ray(query).is_empty() and not nav_graph.get_id_path(start,id).is_empty():
+			best = candidate
+			best_distance = distance
+	return best
+
+
 func find_apartment_path(from: Vector3, to: Vector3) -> PackedVector3Array:
+	if nav_graph.get_point_count() == 0:
+		return PackedVector3Array()
+	if _can_walk(from,to):
+		return PackedVector3Array([to])
 	var start_id := nav_graph.get_closest_point(from)
 	var end_id := nav_graph.get_closest_point(to)
 	var path := nav_graph.get_point_path(start_id, end_id)
-	path.append(to)
+	if not path.is_empty() and _can_walk(path[path.size()-1],to):
+		path.append(to)
 	return path
 
 
