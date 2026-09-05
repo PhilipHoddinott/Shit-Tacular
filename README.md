@@ -32,6 +32,9 @@ Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazo
 
 ## Controls
 
+“Flush Funk,” generated locally with ACE-Step, plays quietly across menus and matches.
+Press **M** to pause or resume the music independently of game sound effects.
+
 The bottom-left minimap shows the selected floor plan. Your cyan arrow indicates your position and facing direction; red dots show all other living players or bots, including through walls. Eliminated combatants disappear, and respawning bots reappear.
 
 | Control | Action |

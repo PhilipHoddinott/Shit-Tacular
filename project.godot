@@ -17,6 +17,7 @@ run/flush_stdout_on_print=true
 
 Diagnostics="*res://scripts/diagnostics.gd"
 SoundEffects="*res://scripts/sound_effects.gd"
+Music="*res://scripts/music.gd"
 
 [debug]
 
