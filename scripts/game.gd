@@ -6,6 +6,7 @@ const BotScript = preload("res://scripts/bot.gd")
 const ToiletScript = preload("res://scripts/toilet.gd")
 const ChairScript = preload("res://scripts/chair.gd")
 const ApartmentMaterials = preload("res://scripts/apartment_materials.gd")
+const SecondFloor = preload("res://scripts/second_floor.gd")
 
 const APARTMENT_SCALE := 2.0
 const PLAN_SCALE := 0.02 * APARTMENT_SCALE
@@ -29,6 +30,9 @@ var ui_banner: Label
 var ui_status: Label
 var replay_button: Button
 var lives_selector: OptionButton
+var floor_selector: OptionButton
+var selected_floor_plan := "basment"
+var map_nodes: Array[Node] = []
 var hud_root: Control
 var menu_root: Control
 var multiplayer_menu_root: Control
@@ -83,12 +87,7 @@ func _ready() -> void:
 	multiplayer.connection_failed.connect(_on_network_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	_setup_materials()
-	_setup_world()
-	_build_apartment()
-	_build_windows_and_entry()
-	_build_furniture()
-	_build_toilets()
-	_build_navigation_graph()
+	_load_floor_plan("2nd floor" if "--second-floor" in OS.get_cmdline_user_args() else "basment")
 	_create_ui()
 	Diagnostics.log_event("game_scene_ready", {"qa_mode": not OS.get_cmdline_user_args().is_empty()})
 	if "--qa-capture" in OS.get_cmdline_user_args():
@@ -117,6 +116,8 @@ func _ready() -> void:
 	elif "--qa-zoom-capture" in OS.get_cmdline_user_args():
 		_start_round()
 		_capture_zoom_frame.call_deferred()
+	elif "--qa-maps" in OS.get_cmdline_user_args():
+		_test_floor_plans.call_deferred()
 	elif "--qa-multiplayer-menu-capture" in OS.get_cmdline_user_args():
 		_capture_multiplayer_menu_qa_frame.call_deferred()
 	elif "--qa-host-lobby-capture" in OS.get_cmdline_user_args():
@@ -199,6 +200,9 @@ func _capture_floorplan_qa_frame() -> void:
 	audit_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	audit_camera.size = 12.7 * APARTMENT_SCALE
 	audit_camera.position = _expanded(Vector3(4.95, 14.0, 5.65))
+	if selected_floor_plan == "2nd floor":
+		audit_camera.size = 39.0
+		audit_camera.position = SecondFloor.point(757.5,451.5)+Vector3.UP*25
 	audit_camera.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
 	audit_camera.current = true
 	add_child(audit_camera)
@@ -568,6 +572,59 @@ func _assert_hallway_clearance() -> void:
 	print("QA_HALLWAYS_OK doorways=7 capsule_width=0.50m")
 
 
+func _load_floor_plan(map_name: String) -> void:
+	for node in map_nodes:
+		if is_instance_valid(node):
+			remove_child(node)
+			node.queue_free()
+	map_nodes.clear()
+	nav_graph.clear()
+	selected_floor_plan = map_name if map_name in ["basment", "2nd floor"] else "basment"
+	var existing := get_children()
+	_setup_world()
+	if selected_floor_plan == "2nd floor":
+		SecondFloor.build(self)
+	else:
+		_build_apartment()
+		_build_windows_and_entry()
+		_build_furniture()
+		_build_toilets()
+		_build_navigation_graph()
+	for node in get_children():
+		if node not in existing:
+			map_nodes.append(node)
+	if floor_selector:
+		floor_selector.select(1 if selected_floor_plan == "2nd floor" else 0)
+
+
+func _test_floor_plans() -> void:
+	for map_name in ["2nd floor", "basment", "2nd floor"]:
+		_load_floor_plan(map_name)
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		var capsule := CapsuleShape3D.new()
+		capsule.radius = 0.25
+		capsule.height = 1.5
+		var query := PhysicsShapeQueryParameters3D.new()
+		query.shape = capsule
+		query.collision_mask = 1
+		var positions := _network_spawn_positions()
+		if map_name == "2nd floor":
+			positions.append_array(SecondFloor.doorways())
+		for position in positions:
+			query.transform = Transform3D(Basis.IDENTITY,position+Vector3.UP*.78)
+			assert(get_world_3d().direct_space_state.intersect_shape(query).is_empty(), "Map spawn or doorway blocked at %s: %s" % [map_name,position])
+		assert(get_node_or_null("FloorplanOverlay") != null, "Both maps must display their floor plan")
+		assert(get_tree().get_nodes_in_group("sittable_chairs").size() == 4, "Switching maps must replace furniture")
+		assert(nav_graph.get_point_count() > 0, "Each map requires navigation")
+		_start_round()
+		assert(combatants.size() == 4, "Either map must start a match")
+		_clear_combatants()
+		_show_main_menu()
+		print("QA_MAP_OK ",map_name)
+	get_tree().quit()
+
+
 func _setup_materials() -> void:
 	wall_material = _material(Color("e8e0d5"), 0.86)
 	primary_wall_material = _material(Color("82b7e8"), 0.9)
@@ -601,6 +658,8 @@ func _setup_world() -> void:
 	sun.light_energy = 0.52
 	sun.shadow_enabled = true
 	add_child(sun)
+	if selected_floor_plan == "2nd floor":
+		return
 
 	for light_data in [
 		[Vector3(2.0, 2.45, 2.9), Color("ffd8a6")],
@@ -1179,8 +1238,8 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	menu_root.add_child(glow)
 
 	var panel := PanelContainer.new()
-	panel.position = Vector2(365, 70)
-	panel.size = Vector2(550, 580)
+	panel.position = Vector2(365, 30)
+	panel.size = Vector2(550, 660)
 	var panel_style := StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.045, 0.035, 0.065, 0.96)
 	panel_style.border_color = Color("c52cae")
@@ -1241,6 +1300,19 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	lives_selector.item_selected.connect(_on_lives_selected)
 	lives_row.add_child(lives_selector)
 	content.add_child(lives_row)
+	var floor_row := HBoxContainer.new()
+	var floor_label := Label.new()
+	floor_label.text = "FLOOR PLAN"
+	floor_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	floor_row.add_child(floor_label)
+	floor_selector = OptionButton.new()
+	floor_selector.custom_minimum_size = Vector2(180,45)
+	floor_selector.add_item("basment")
+	floor_selector.add_item("2nd floor")
+	floor_selector.select(1 if selected_floor_plan == "2nd floor" else 0)
+	floor_selector.item_selected.connect(func(index: int): _load_floor_plan("2nd floor" if index == 1 else "basment"))
+	floor_row.add_child(floor_selector)
+	content.add_child(floor_row)
 
 	var single_player := _menu_button("SINGLE PLAYER")
 	single_player.pressed.connect(_on_single_player_pressed)
@@ -1664,12 +1736,14 @@ func _start_network_match() -> void:
 	var chosen_spawns: Array[Vector3] = []
 	for index in peer_ids.size():
 		chosen_spawns.append(available_spawns[index])
-	_begin_network_match.rpc(peer_ids, lobby_players, selected_lives, chosen_spawns)
+	_begin_network_match.rpc(peer_ids, lobby_players, selected_lives, chosen_spawns, selected_floor_plan)
 
 
 @rpc("authority", "call_local", "reliable")
-func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array) -> void:
+func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array, map_name: String) -> void:
 	_clear_combatants()
+	if selected_floor_plan != map_name:
+		_load_floor_plan(map_name)
 	network_match_started = true
 	round_over = false
 	selected_lives = lives
@@ -1713,6 +1787,8 @@ func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int,
 
 
 func _network_spawn_positions() -> Array[Vector3]:
+	if selected_floor_plan == "2nd floor":
+		return SecondFloor.spawns()
 	return [
 		_expanded(Vector3(1.35, 0.05, 3.55)), _expanded(Vector3(2.5, 0.05, 1.7)),
 		_expanded(Vector3(7.4, 0.05, 2.55)), _expanded(Vector3(8.6, 0.05, 4.8)),
