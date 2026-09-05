@@ -18,7 +18,11 @@ You can also launch the project from PowerShell:
 .\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64.exe --path .
 ```
 
-Choose 1, 2, 3, or 5 lives per player from the main menu. Every combatant begins each life with 100 health and respawns at a random safe location while lives remain. The last player standing wins.
+Choose 1, 2, 3, or 5 lives per player from the main menu. Every combatant begins with 100 health. Your death returns you directly to the main menu, even if you have lives remaining; choose Single Player to start a fresh game. Bots respawn while lives remain. In multiplayer, death leaves the match; if the host dies, the hosted session closes. The last player standing wins.
+
+Players and bots regenerate **2 health per second after 5 seconds without taking damage**, up to 100 health. Taking another hit restarts the delay. Healing stops on death or when the round ends; multiplayer healing is controlled by the host.
+
+Hold right mouse to zoom while aiming; release it to return to normal view. Rifle zoom is stronger than pistol, shotgun, or bazooka zoom, and mouse sensitivity scales with magnification. Original synthesized spatial effects cover gunfire, impacts, explosions, toilet flushes, weapon rewards, and the rainbow power-up. Sounds are shared with multiplayer peers and require no downloads.
 
 Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and lock in the glowing rainbow rifle, which cycles colors and deals 40 damage per bullet for the rest of the round, including after respawning.
 
@@ -30,6 +34,7 @@ Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazo
 | `Shift` | Sprint |
 | `Space` | Jump |
 | Left mouse | Fire the equipped weapon |
+| Hold right mouse | Aim / zoom (stronger magnification for rifles) |
 | `E` | Flush a toilet, sit in a dining chair, or stand up |
 | `Escape` | Release or recapture the mouse |
 | `R` | Restart after the round ends |
@@ -79,7 +84,7 @@ Logs may contain player names and network addresses, so review them before shari
 
 ## Project notes
 
-The apartment uses a doubled horizontal footprint for wider rooms and less crowded firefights. It includes room-specific wall colors, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror. The supplied apartment plan is rendered onto the prototype floor so the 3D walls and hallway routes can be checked against the source drawing as the level is refined.
+The apartment uses a doubled horizontal footprint for wider rooms and less crowded firefights. The supplied floor-plan PNG is the default floor. It includes room-specific wall colors, wall panels and bathroom wall tiles, baseboards, ceiling trim, doorway casings, ceiling fixtures, fabric upholstery, detailed cabinets, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror. Furniture and wall surface textures are generated deterministically in Godot, with mipmaps, and require no asset downloads. Use `--qa-floorplan-capture` for the overhead layout check.
 
 The GitHub-ready 1280×640 social preview is stored at `assets/github/social-preview.jpg`, with its full-resolution generated source beside it.
 

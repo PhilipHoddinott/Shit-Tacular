@@ -8,6 +8,7 @@ const DAMAGE := 24
 const MOVE_SPEED := 2.8
 
 var health := MAX_HEALTH
+var regeneration := preload("res://scripts/health_regeneration.gd").new()
 var lives_remaining := 1
 var is_alive := true
 var game: Node
@@ -82,6 +83,8 @@ func _create_body() -> void:
 func _physics_process(delta: float) -> void:
 	if not is_alive or not game:
 		return
+	if not game.round_over:
+		health = regeneration.tick(delta, health, is_alive)
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 
@@ -146,6 +149,7 @@ func _has_line_of_sight(aim_position: Vector3) -> bool:
 
 
 func _shoot(aim_position: Vector3) -> void:
+	game.emit_world_sound("pistol", global_position + Vector3.UP)
 	fire_time = randf_range(0.72, 1.2)
 	var origin := global_position + Vector3.UP * 1.28
 	var inaccuracy := Vector3(randf_range(-0.16, 0.16), randf_range(-0.12, 0.12), randf_range(-0.16, 0.16))
@@ -159,8 +163,9 @@ func _shoot(aim_position: Vector3) -> void:
 
 
 func apply_damage(amount: int, _attacker: Node = null) -> void:
-	if not is_alive:
+	if not is_alive or amount <= 0:
 		return
+	regeneration.reset()
 	health = maxi(health - amount, 0)
 	body_material.albedo_color = body_material.albedo_color.lerp(Color.WHITE, 0.25)
 	if health <= 0:
@@ -174,6 +179,7 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 
 func respawn_at(spawn_position: Vector3, yaw: float) -> void:
 	health = MAX_HEALTH
+	regeneration.reset()
 	is_alive = true
 	collision_layer = 2
 	collision_mask = 1

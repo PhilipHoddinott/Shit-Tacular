@@ -23,6 +23,7 @@ const WEAPON_BAZOOKA := "bazooka"
 const WEAPON_RAINBOW_RIFLE := "rainbow_rifle"
 
 var health := MAX_HEALTH
+var regeneration := preload("res://scripts/health_regeneration.gd").new()
 var damage := BASE_DAMAGE
 var current_weapon := WEAPON_PISTOL
 var lives_remaining := 1
@@ -38,6 +39,7 @@ var muzzle_flash: OmniLight3D
 var fire_cooldown := 0.0
 var recoil := 0.0
 var rainbow_time := 0.0
+var hip_weapon_position := Vector3.ZERO
 var sitting := false
 var sitting_chair: Node
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
@@ -110,6 +112,7 @@ func _equip_weapon(weapon_name: String) -> void:
 			damage = BASE_DAMAGE
 			weapon_material.albedo_color = Color("30343b")
 	_rebuild_weapon_visual()
+	hip_weapon_position = weapon_root.position
 
 
 func weapon_display_name() -> String:
@@ -208,8 +211,9 @@ func _add_weapon_cylinder(position: Vector3, radius: float, length: float, mater
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and input_enabled:
-		rotate_y(-event.relative.x * MOUSE_SENSITIVITY)
-		neck.rotate_x(-event.relative.y * MOUSE_SENSITIVITY)
+		var zoom_sensitivity := camera.fov / 78.0
+		rotate_y(-event.relative.x * MOUSE_SENSITIVITY * zoom_sensitivity)
+		neck.rotate_x(-event.relative.y * MOUSE_SENSITIVITY * zoom_sensitivity)
 		neck.rotation.x = clampf(neck.rotation.x, deg_to_rad(-88.0), deg_to_rad(88.0))
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else Input.MOUSE_MODE_CAPTURED
@@ -218,6 +222,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _physics_process(delta: float) -> void:
 	if not is_alive:
 		return
+	_tick_regeneration(delta)
 	fire_cooldown = maxf(fire_cooldown - delta, 0.0)
 	muzzle_flash.light_energy = move_toward(muzzle_flash.light_energy, 0.0, delta * 30.0)
 	recoil = move_toward(recoil, 0.0, delta * 5.5)
@@ -256,6 +261,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _animate_weapon(delta: float) -> void:
+	_update_aim(delta)
 	if current_weapon == WEAPON_RAINBOW_RIFLE:
 		rainbow_time = fmod(rainbow_time + delta * 0.12, 1.0)
 		var rainbow_color := Color.from_hsv(rainbow_time, 0.78, 1.0)
@@ -263,9 +269,32 @@ func _animate_weapon(delta: float) -> void:
 		weapon_material.emission = rainbow_color
 
 
+func _update_aim(delta: float) -> void:
+	if not camera.current:
+		return
+	var aiming := is_alive and input_enabled and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_action_pressed("aim")
+	var target_fov := 78.0
+	if aiming:
+		match current_weapon:
+			WEAPON_RIFLE, WEAPON_RAINBOW_RIFLE: target_fov = 38.0
+			WEAPON_SHOTGUN: target_fov = 60.0
+			WEAPON_BAZOOKA: target_fov = 48.0
+			_: target_fov = 55.0
+	var blend := 1.0 - exp(-14.0 * delta)
+	camera.fov = lerpf(camera.fov, target_fov, blend)
+	var target_position := hip_weapon_position
+	if aiming:
+		target_position.x *= 0.35
+		target_position.y -= 0.04
+		target_position.z -= 0.15
+	weapon_root.position = weapon_root.position.lerp(target_position, blend)
+
+
 func _fire() -> void:
 	if fire_cooldown > 0.0:
 		return
+	if game:
+		game.emit_world_sound(current_weapon, global_position + Vector3.UP)
 	match current_weapon:
 		WEAPON_SHOTGUN:
 			fire_cooldown = 0.82
@@ -347,6 +376,8 @@ func register_toilet_flush(toilet_id: int) -> void:
 		choices.erase(current_weapon)
 		_equip_weapon(choices.pick_random())
 	toilet_progress.emit(flushed_toilets.size(), 3)
+	if game:
+		game.emit_world_sound("powerup" if flushed_toilets.size() == 3 else "equip", global_position + Vector3.UP)
 	if flushed_toilets.size() == 3:
 		powerup_activated.emit()
 
@@ -380,9 +411,19 @@ func stand_up() -> void:
 	chair.release(self)
 
 
-func apply_damage(amount: int, _attacker: Node = null) -> void:
-	if not is_alive:
+func _tick_regeneration(delta: float) -> void:
+	if game and game.round_over:
 		return
+	var next_health: int = regeneration.tick(delta, health, is_alive)
+	if next_health != health:
+		health = next_health
+		health_changed.emit(health, MAX_HEALTH)
+
+
+func apply_damage(amount: int, _attacker: Node = null) -> void:
+	if not is_alive or amount <= 0:
+		return
+	regeneration.reset()
 	health = maxi(health - amount, 0)
 	health_changed.emit(health, MAX_HEALTH)
 	if health <= 0:
@@ -406,6 +447,7 @@ func respawn_at(spawn_position: Vector3, yaw: float) -> void:
 	sitting = false
 	sitting_chair = null
 	health = MAX_HEALTH
+	regeneration.reset()
 	is_alive = true
 	input_enabled = true
 	collision_layer = 2

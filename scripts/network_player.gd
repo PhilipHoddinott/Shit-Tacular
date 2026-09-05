@@ -109,6 +109,7 @@ func _physics_process(delta: float) -> void:
 func _server_simulate(delta: float) -> void:
 	if not is_alive:
 		return
+	_tick_regeneration(delta)
 	server_input_age += delta
 	if server_input_age > 0.25:
 		server_move_input = Vector2.ZERO
@@ -223,8 +224,9 @@ func apply_network_state(state: Dictionary) -> void:
 
 
 func apply_damage(amount: int, _attacker: Node = null) -> void:
-	if not is_alive:
+	if not multiplayer.is_server() or not is_alive or amount <= 0:
 		return
+	regeneration.reset()
 	health = maxi(health - amount, 0)
 	if is_local_player:
 		health_changed.emit(health, MAX_HEALTH)
@@ -253,6 +255,7 @@ func respawn_at(spawn_position: Vector3, yaw: float) -> void:
 	sitting = false
 	sitting_chair = null
 	health = MAX_HEALTH
+	regeneration.reset()
 	is_alive = true
 	input_enabled = is_local_player
 	collision_layer = 2

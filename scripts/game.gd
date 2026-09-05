@@ -5,6 +5,7 @@ const NetworkPlayerScript = preload("res://scripts/network_player.gd")
 const BotScript = preload("res://scripts/bot.gd")
 const ToiletScript = preload("res://scripts/toilet.gd")
 const ChairScript = preload("res://scripts/chair.gd")
+const ApartmentMaterials = preload("res://scripts/apartment_materials.gd")
 
 const APARTMENT_SCALE := 2.0
 const PLAN_SCALE := 0.02 * APARTMENT_SCALE
@@ -45,6 +46,7 @@ var upnp_checkbox: CheckBox
 var crash_logs_button: Button
 var banner_time := 0.0
 var round_over := false
+var death_menu_pending := false
 var selected_lives := 1
 var selected_player_count := 4
 var network_port := DEFAULT_NETWORK_PORT
@@ -112,6 +114,9 @@ func _ready() -> void:
 	elif "--qa-weapons-capture" in OS.get_cmdline_user_args():
 		_start_round()
 		_capture_weapons_qa_frames.call_deferred()
+	elif "--qa-zoom-capture" in OS.get_cmdline_user_args():
+		_start_round()
+		_capture_zoom_frame.call_deferred()
 	elif "--qa-multiplayer-menu-capture" in OS.get_cmdline_user_args():
 		_capture_multiplayer_menu_qa_frame.call_deferred()
 	elif "--qa-host-lobby-capture" in OS.get_cmdline_user_args():
@@ -252,6 +257,24 @@ func _capture_bathroom_qa_frame() -> void:
 	get_tree().quit()
 
 
+func _capture_zoom_frame() -> void:
+	for combatant in combatants:
+		combatant.set_physics_process(false)
+	player.position = _expanded(Vector3(6.8, 0.05, 5.55))
+	player.rotation.y = 0.0
+	player.equip_weapon(FpsPlayer.WEAPON_RIFLE)
+	Input.action_press("aim")
+	player._update_aim(1.0)
+	ui_banner.text = ""
+	banner_time = 0.0
+	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://artifacts"))
+	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path("res://artifacts/qa_zoom.png"))
+	Input.action_release("aim")
+	get_tree().quit()
+
+
 func _capture_weapons_qa_frames() -> void:
 	player.input_enabled = false
 	player.position = _expanded(Vector3(6.8, 0.05, 5.55))
@@ -343,7 +366,21 @@ func _finish_qa_network_test() -> void:
 		assert(player.global_position.distance_to(starting_position) > 0.05, "Client input must move its server-authoritative player")
 		assert(player.health == 76, "Server damage must synchronize to the client")
 		assert(player.current_weapon == FpsPlayer.WEAPON_RAINBOW_RIFLE and player.damage == 40 and player.flushed_toilets.size() == 3, "The toilet weapon reward must synchronize to the client")
+	# Verify that host healing reaches the client through normal snapshots.
+	await get_tree().create_timer(6.0).timeout
+	if not multiplayer.is_server():
+		assert(player.health >= 78 and player.health <= 80, "Host regeneration must synchronize to the client")
+		print("QA_NETWORK_REGEN_OK health=%d" % player.health)
 	print("QA_NETWORK_OK peer=%d players=%d host=%s" % [multiplayer.get_unique_id(), network_players.size(), multiplayer.is_server()])
+	if multiplayer.is_server():
+		await get_tree().create_timer(0.15).timeout
+		for id in network_players:
+			if int(id) != 1:
+				network_players[id].apply_damage(999, player)
+	else:
+		await get_tree().create_timer(0.4).timeout
+		assert(menu_root.visible and player == null and not network_match_started, "A defeated client must leave the match and return to the main menu")
+		print("QA_NETWORK_DEATH_MENU_OK")
 	await get_tree().create_timer(0.5).timeout
 	get_tree().quit()
 
@@ -356,6 +393,8 @@ func _run_qa_smoke() -> void:
 	_assert_hallway_clearance()
 	assert(APARTMENT_SCALE == 2.0 and _network_spawn_positions()[7].x > 17.0, "Apartment geometry and spawns must use the doubled footprint")
 	assert(player.health == 100, "Player must spawn with 100 health")
+	_assert_health_regeneration()
+	_assert_zoom_and_audio()
 	assert(player.damage == 24, "Pistol must start at 24 damage")
 	for weapon_test in [
 		[FpsPlayer.WEAPON_SHOTGUN, 12, "12 x 8"],
@@ -397,9 +436,16 @@ func _run_qa_smoke() -> void:
 	assert(ui_banner.text == "TRIPLE-SHIT!", "Power-up banner must use the requested wording")
 	player.apply_damage(999)
 	assert(not player.is_alive and player.lives_remaining == 1, "A defeated player must spend one life")
-	await get_tree().create_timer(1.2).timeout
-	assert(player.is_alive and player.health == 100, "A player with lives remaining must respawn at full health")
-	assert(player.current_weapon == FpsPlayer.WEAPON_RAINBOW_RIFLE and player.damage == 40 and player.flushed_toilets.size() == 3, "The rainbow rifle must survive a respawn")
+	await get_tree().process_frame
+	assert(menu_root.visible and not hud_root.visible and player == null and combatants.is_empty(), "Death must return to the menu even with lives remaining")
+	assert(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE and not replay_button.visible, "Death menu must release the mouse and hide replay")
+	assert(get_node_or_null("FloorplanOverlay") != null and get_node_or_null("RoomFloorFinish") == null, "The floor-plan PNG must be the default floor")
+	_on_single_player_pressed()
+	for combatant in combatants:
+		combatant.set_physics_process(false)
+	player.input_enabled = false
+	assert(player.health == 100 and player.flushed_toilets.is_empty() and not menu_root.visible, "The menu must start a clean new game")
+	print("QA_DEATH_MENU_OK remaining_lives=ignored restart=clean floorplan=visible")
 	var test_bot := combatants[1] as ApartmentBot
 	test_bot.apply_damage(40, player)
 	test_bot.apply_damage(40, player)
@@ -425,6 +471,73 @@ func _run_qa_smoke() -> void:
 		assert(combatant.lives_remaining == 2, "Replay must preserve the selected lives setting")
 	print("QA_SMOKE_OK apartment_scale=2 weapons=4 rainbow_rifle_damage=40 toilets=3 chairs=sittable lives=respawn replay=visible")
 	get_tree().quit()
+
+
+func _assert_zoom_and_audio() -> void:
+	if DisplayServer.get_name() == "headless":
+		print("QA_ZOOM_SKIPPED: mouse capture requires the rendered smoke test")
+		return
+	player.input_enabled = true
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	Input.action_press("aim")
+	for entry in [["pistol", 55.0], ["shotgun", 60.0], ["rifle", 38.0], ["rainbow_rifle", 38.0], ["bazooka", 48.0]]:
+		player.equip_weapon(entry[0])
+		player._update_aim(1.0)
+		assert(absf(player.camera.fov - entry[1]) < 0.01, "Each weapon must zoom to its intended field of view")
+	Input.action_release("aim")
+	player._update_aim(1.0)
+	assert(absf(player.camera.fov - 78.0) < 0.01, "Releasing aim must restore normal field of view")
+	Input.action_press("aim")
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	player._update_aim(1.0)
+	assert(absf(player.camera.fov - 78.0) < 0.01, "Releasing the mouse must cancel zoom")
+	Input.action_release("aim")
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	player.input_enabled = false
+	player.equip_weapon(FpsPlayer.WEAPON_PISTOL)
+	for effect in SoundEffects.streams:
+		var stream: AudioStreamWAV = SoundEffects.streams[effect]
+		assert(stream.get_length() > 0.05 and stream.data.size() > 0, "Every sound must contain PCM samples")
+	SoundEffects.play_effect("pistol", player.position)
+	assert(SoundEffects.get_child_count() > 0, "Effects must create a spatial audio voice")
+	print("QA_ZOOM_AUDIO_OK weapons=5 release=restored mouse_release=restored audio=ready")
+
+
+func _assert_health_regeneration() -> void:
+	player.apply_damage(24)
+	player._tick_regeneration(5.0)
+	assert(player.health == 76, "No healing during the five-second damage delay")
+	player._tick_regeneration(0.25)
+	assert(player.health == 76, "Fractional healing must accumulate")
+	player._tick_regeneration(0.25)
+	assert(player.health == 77, "Heal two health per second")
+	player.apply_damage(1)
+	player._tick_regeneration(5.25)
+	assert(player.health == 76, "New damage must reset the delay and fractional healing")
+	player._tick_regeneration(0.25)
+	assert(player.health == 77, "Only time after the delay contributes healing")
+	player._tick_regeneration(100.0)
+	assert(player.health == 100, "Healing must stop at maximum health")
+	player.is_alive = false
+	player.health = 0
+	player._tick_regeneration(100.0)
+	assert(player.health == 0, "Regeneration must never revive a dead player")
+	player.is_alive = true
+	player.health = 80
+	round_over = true
+	player._tick_regeneration(100.0)
+	assert(player.health == 80, "Healing must stop when the round ends")
+	round_over = false
+	player.respawn_at(player.position, player.rotation.y)
+	player.input_enabled = false
+	assert(player.health == 100 and player.regeneration.fraction == 0.0, "Respawn must reset healing")
+	var bot := combatants[1] as ApartmentBot
+	bot.apply_damage(24)
+	bot.health = bot.regeneration.tick(6.0, bot.health, bot.is_alive)
+	assert(bot.health == 78, "Bots must use the same healing rate and delay")
+	bot.health = 100
+	bot.regeneration.reset()
+	print("QA_REGEN_OK delay=5s rate=2hp/s cap=100 damage_reset=ok dead=blocked round_end=blocked")
 
 
 func _assert_hallway_clearance() -> void:
@@ -464,8 +577,8 @@ func _setup_materials() -> void:
 	bedroom_wall_material = _material(Color("c49ce2"), 0.9)
 	bathroom_wall_material = _material(Color("76d4c7"), 0.86)
 	foyer_wall_material = _material(Color("ef9fc8"), 0.9)
-	floor_material = _material(Color("8a6849"), 0.72)
-	wood_material = _material(Color("70452f"), 0.77)
+	floor_material = ApartmentMaterials.surface("wood", Color("c49667"), 0.78)
+	wood_material = ApartmentMaterials.surface("wood", Color("896044"), 0.72)
 	white_material = _material(Color("eeeef0"), 0.64)
 	dark_material = _material(Color("252832"), 0.48)
 
@@ -476,8 +589,8 @@ func _setup_world() -> void:
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color("15131c")
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color("d8d4ef")
-	env.ambient_light_energy = 0.38
+	env.ambient_light_color = Color("e1e8f2")
+	env.ambient_light_energy = 0.48
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	environment.environment = env
 	add_child(environment)
@@ -499,10 +612,14 @@ func _setup_world() -> void:
 		var light := OmniLight3D.new()
 		light.position = _expanded(light_data[0])
 		light.light_color = light_data[1]
-		light.light_energy = 0.62
+		light.light_energy = 0.48
 		light.omni_range = 7.2
 		light.shadow_enabled = true
 		add_child(light)
+		var fixture_position := _expanded(light_data[0])
+		fixture_position.y = WALL_HEIGHT - 0.055
+		_create_box("CeilingFixtureRim", fixture_position, Vector3(0.76, 0.10, 0.76), dark_material, false)
+		_create_box("CeilingFixtureDiffuser", fixture_position - Vector3(0, 0.057, 0), Vector3(0.65, 0.025, 0.65), _material(Color("fff0d2"), 0.7, true), false)
 
 
 func _build_apartment() -> void:
@@ -553,6 +670,30 @@ func _build_apartment() -> void:
 		[Vector2(389, 489), Vector2(436, 489)]
 	]:
 		_create_wall(_plan(door[0]), _plan(door[1]), 0.13, 0.55, 2.17, wood_material)
+		# Thin casings sit on the walls, outside the walkable doorway.
+		var a := _plan(door[0])
+		var b := _plan(door[1])
+		var direction := (b - a).normalized()
+		for endpoint in [a - direction * 0.04, b + direction * 0.04]:
+			var jamb := _create_box("DoorCasing", endpoint + Vector3.UP * 1.09, Vector3(0.08, 2.18, 0.19), white_material, false)
+			jamb.rotation.y = -atan2(direction.z, direction.x)
+		var casing := _create_box("DoorCasingHeader", (a + b) * 0.5 + Vector3.UP * 2.18, Vector3(a.distance_to(b) + 0.16, 0.10, 0.19), white_material, false)
+		casing.rotation.y = -atan2(direction.z, direction.x)
+
+
+func _build_room_floors() -> void:
+	var tile := ApartmentMaterials.surface("tile", Color("c2ddd5"), 0.48)
+	var kitchen_tile := ApartmentMaterials.surface("tile", Color("e8deca"), 0.62)
+	# Source-plan coordinates keep finishes aligned with existing room boundaries.
+	for room in [
+		[Vector2(419, 137), Vector2(507, 260), tile],
+		[Vector2(248, 382), Vector2(331, 579), tile],
+		[Vector2(331, 489), Vector2(490, 579), tile],
+		[Vector2(507, 337), Vector2(645, 449), kitchen_tile]
+	]:
+		var a := _plan(room[0])
+		var b := _plan(room[1])
+		_create_box("RoomFloorFinish", (a + b) * 0.5 + Vector3.UP * 0.006, Vector3(b.x - a.x, 0.01, b.z - a.z), room[2], false)
 
 
 func _create_floorplan_overlay() -> void:
@@ -713,6 +854,32 @@ func _build_furniture() -> void:
 	_create_wall_art(Vector3(9.79, 1.55, 5.55), PI * 0.5, Color("58cde0"), Color("ff6b9b"))
 	_create_wall_art(Vector3(0.08, 1.5, 2.8), -PI * 0.5, Color("ffd45c"), Color("795ad9"))
 	_create_wall_mirror(Vector3(3.85, 1.52, 2.52), 0.0, Vector2(0.72, 0.78))
+	_create_display_shelf(Vector3(9.79, 1.55, 2.55), -PI * 0.5)
+	_create_wall_art(Vector3(9.79, 1.8, 3.7), -PI * 0.5, Color("e8b55d"), Color("5b9389"))
+	_create_display_shelf(Vector3(0.08, 1.45, 3.6), PI * 0.5)
+	# Reading material and a remote rest on the coffee table.
+	_create_child_box(coffee_table, Vector3(0.22, 0.083, 0.10), Vector3(0.28, 0.035, 0.21), _material(Color("57aab4"), 0.85), false)
+	_create_child_box(coffee_table, Vector3(0.22, 0.105, 0.10), Vector3(0.25, 0.008, 0.19), white_material, false)
+	_create_child_box(coffee_table, Vector3(-0.35, 0.078, 0.14), Vector3(0.075, 0.028, 0.20), dark_material, false)
+	for button in range(4):
+		_create_child_box(coffee_table, Vector3(-0.35, 0.094, 0.09 + button * 0.026), Vector3(0.032, 0.005, 0.014), white_material, false)
+
+
+func _create_display_shelf(position: Vector3, yaw: float) -> void:
+	var shelf := Node3D.new()
+	shelf.name = "BookDisplayShelf"
+	shelf.position = _expanded(position)
+	shelf.rotation.y = yaw
+	add_child(shelf)
+	_create_child_box(shelf, Vector3(0, 0, 0.12), Vector3(1.25, 0.055, 0.28), wood_material, false)
+	for side in [-0.43, 0.43]:
+		_create_child_box(shelf, Vector3(side, -0.10, 0.025), Vector3(0.035, 0.23, 0.035), dark_material, false)
+	var colors := [Color("d97767"), Color("e7bd63"), Color("608e9e"), Color("8a779e"), Color("698f79")]
+	for index in range(5):
+		var height := 0.23 + 0.035 * (index % 3)
+		var book_x := -0.43 + index * 0.12
+		_create_child_box(shelf, Vector3(book_x, 0.028 + height * 0.5, 0.13), Vector3(0.085, height, 0.17), _material(colors[index], 0.86), false)
+		_create_child_box(shelf, Vector3(book_x, 0.10, 0.219), Vector3(0.06, 0.012, 0.003), white_material, false)
 
 
 func _build_toilets() -> void:
@@ -798,6 +965,7 @@ func _on_combatant_died(combatant: Node) -> void:
 	})
 	if combatant == player:
 		ui_lives.text = "LIVES  %d" % combatant.lives_remaining
+		return
 
 	var contenders := _get_remaining_contenders()
 	if contenders.size() <= 1:
@@ -844,7 +1012,7 @@ func _choose_respawn_position(respawning: Node3D) -> Vector3:
 
 
 func _finish_round(contenders: Array[Node]) -> void:
-	if round_over:
+	if round_over or menu_root.visible:
 		return
 	round_over = true
 	var winner := "Nobody"
@@ -877,6 +1045,24 @@ func _network_round_finished(winner: String) -> void:
 func _on_player_health_changed(current: int, _maximum: int) -> void:
 	ui_health.text = "HEALTH  %d" % current
 	ui_health.modulate = Color("ff6565") if current <= 30 else Color.WHITE
+	if current <= 0 and not death_menu_pending:
+		death_menu_pending = true
+		round_over = true
+		_return_to_menu_after_death.call_deferred()
+
+
+func _return_to_menu_after_death() -> void:
+	# Defer teardown until damage signals and network snapshot application finish.
+	_close_network_connection()
+	_clear_combatants()
+	lobby_players.clear()
+	banner_time = 0.0
+	ui_banner.text = ""
+	ui_status.visible = false
+	replay_button.visible = false
+	round_over = false
+	death_menu_pending = false
+	_show_main_menu()
 
 
 func _on_toilet_progress(current: int, total: int) -> void:
@@ -928,7 +1114,7 @@ func _create_ui() -> void:
 	hud_root.add_child(ui_lives)
 
 	var controls := _ui_label(24, Vector2(28, 650), 15)
-	controls.text = "WASD MOVE    SHIFT SPRINT    SPACE JUMP    LMB FIRE    E USE / STAND    ESC MOUSE"
+	controls.text = "WASD MOVE    SHIFT SPRINT    SPACE JUMP    LMB FIRE    RMB AIM    E USE / STAND    ESC MOUSE"
 	controls.modulate = Color(1, 1, 1, 0.62)
 	hud_root.add_child(controls)
 
@@ -1853,6 +2039,19 @@ func _show_banner(text: String, duration: float) -> void:
 	banner_time = duration
 
 
+func emit_world_sound(effect: String, position: Vector3) -> void:
+	if network_match_started:
+		if multiplayer.is_server():
+			_play_world_sound.rpc(effect, position)
+	else:
+		_play_world_sound(effect, position)
+
+
+@rpc("authority", "call_local", "unreliable")
+func _play_world_sound(effect: String, position: Vector3) -> void:
+	SoundEffects.play_effect(effect, position)
+
+
 func spawn_impact(position: Vector3, normal: Vector3, powered_up: bool) -> void:
 	_create_impact(position, normal, powered_up)
 	if network_match_started and multiplayer.is_server():
@@ -1880,6 +2079,7 @@ func _spawn_network_explosion(position: Vector3, radius: float) -> void:
 
 
 func _create_explosion(position: Vector3, radius: float) -> void:
+	SoundEffects.play_effect("explosion", position)
 	var blast := MeshInstance3D.new()
 	var mesh := SphereMesh.new()
 	mesh.radius = 0.18
@@ -1903,6 +2103,7 @@ func _spawn_network_impact(position: Vector3, normal: Vector3, powered_up: bool)
 
 
 func _create_impact(position: Vector3, normal: Vector3, powered_up: bool) -> void:
+	SoundEffects.play_effect("impact", position)
 	var impact := MeshInstance3D.new()
 	var mesh := SphereMesh.new()
 	mesh.radius = 0.035 if not powered_up else 0.065
@@ -1957,6 +2158,26 @@ func _create_wall(a: Vector3, b: Vector3, thickness: float = WALL_THICKNESS, hei
 	var center := (a + b) * 0.5 + Vector3.UP * (base_y + height * 0.5)
 	var body := _create_box("Wall", center, Vector3(length + thickness, height, thickness), material if material else wall_material, true)
 	body.rotation.y = -atan2(direction.z, direction.x)
+	if base_y == 0.0:
+		_create_child_box(body, Vector3(0, -height * 0.5 + 0.075, 0), Vector3(length + thickness, 0.15, thickness + 0.055), white_material, false)
+		_create_child_box(body, Vector3(0, height * 0.5 - 0.065, 0), Vector3(length + thickness, 0.13, thickness + 0.065), white_material, false)
+		if length > 1.5:
+			var panel_material := _material((material if material else wall_material).albedo_color.lerp(Color("f3ede0"), 0.72), 0.86)
+			if material == bathroom_wall_material:
+				panel_material = ApartmentMaterials.surface("tile", Color("d5e8e2"), 0.55)
+			for side in [-1.0, 1.0]:
+				var face_z: float = side * (thickness * 0.5 + 0.009)
+				_create_child_box(body, Vector3(0, -height * 0.5 + 0.54, face_z), Vector3(length, 0.78, 0.015), panel_material, false)
+				_create_child_box(body, Vector3(0, -height * 0.5 + 0.95, face_z), Vector3(length, 0.045, 0.055), white_material, false)
+				if material != bathroom_wall_material:
+					var panels := maxi(1, int(length / 0.9))
+					for index in range(1, panels):
+						_create_child_box(body, Vector3(-length * 0.5 + length * index / panels, -height * 0.5 + 0.54, face_z + side * 0.013), Vector3(0.025, 0.76, 0.015), white_material, false)
+				# A small socket plate and two dark slots give the walls human scale.
+				var socket_x := length * 0.3
+				_create_child_box(body, Vector3(socket_x, -height * 0.5 + 0.32, face_z + side * 0.028), Vector3(0.09, 0.13, 0.02), white_material, false)
+				for slot in [-0.019, 0.019]:
+					_create_child_box(body, Vector3(socket_x + slot, -height * 0.5 + 0.32, face_z + side * 0.04), Vector3(0.008, 0.033, 0.004), dark_material, false)
 
 
 func _create_box(object_name: String, position: Vector3, size: Vector3, material: StandardMaterial3D, collision: bool) -> Node3D:
@@ -1984,6 +2205,29 @@ func _create_box(object_name: String, position: Vector3, size: Vector3, material
 		shape.size = size
 		collider.shape = shape
 		root.add_child(collider)
+	if object_name in ["CoffeeTable", "DiningTable"]:
+		var leg_height := position.y - size.y * 0.5
+		for x in [-1.0, 1.0]:
+			for z in [-1.0, 1.0]:
+				_create_child_box(root, Vector3(x * (size.x * 0.5 - 0.1), -size.y * 0.5 - leg_height * 0.5, z * (size.z * 0.5 - 0.1)), Vector3(0.075, leg_height, 0.075), dark_material, false)
+	if object_name in ["KitchenCounter", "KitchenIsland", "Vanity"]:
+		_create_child_box(root, Vector3(0, size.y * 0.5 + 0.025, 0), Vector3(size.x + 0.05, 0.05, size.z + 0.05), wood_material, false)
+		var panels := maxi(1, int(size.x / 0.55))
+		for index in range(panels):
+			var panel_width := size.x / panels
+			var panel_x := -size.x * 0.5 + panel_width * (index + 0.5)
+			_create_child_box(root, Vector3(panel_x, 0, -size.z * 0.5 - 0.008), Vector3(panel_width - 0.025, size.y - 0.15, 0.018), white_material, false)
+			_create_child_box(root, Vector3(panel_x, size.y * 0.28, -size.z * 0.5 - 0.025), Vector3(panel_width * 0.35, 0.025, 0.028), dark_material, false)
+	if object_name in ["Dresser", "Nightstand", "LivingSideTable"]:
+		for drawer in range(3):
+			var drawer_y := -size.y * 0.5 + (drawer + 0.5) * size.y / 3.0
+			_create_child_box(root, Vector3(0, drawer_y, size.z * 0.5 + 0.009), Vector3(size.x - 0.055, size.y / 3.0 - 0.024, 0.025), wood_material, false)
+			_create_child_box(root, Vector3(0, drawer_y, size.z * 0.5 + 0.032), Vector3(size.x * 0.28, 0.024, 0.035), dark_material, false)
+	if object_name == "CartoonFridge":
+		for door in [[0.59, 0.63], [-0.32, 1.12]]:
+			_create_child_box(root, Vector3(0, door[0], size.z * 0.5 + 0.015), Vector3(size.x - 0.04, door[1], 0.035), _material(Color("b0e2e7"), 0.38), false)
+			_create_child_box(root, Vector3(-0.21, door[0], size.z * 0.5 + 0.05), Vector3(0.035, 0.26, 0.04), dark_material, false)
+		_create_child_box(root, Vector3(0.09, 0.35, size.z * 0.5 + 0.039), Vector3(0.19, 0.22, 0.008), _material(Color("fff1bd"), 0.85), false)
 	return root
 
 
@@ -1994,7 +2238,12 @@ func _create_bed(position: Vector3, rotation_y: float, blanket_color: Color) -> 
 	add_child(bed)
 	_create_child_box(bed, Vector3(0, 0.26, 0), Vector3(1.45, 0.3, 2.05), wood_material)
 	_create_child_box(bed, Vector3(0, 0.47, -0.08), Vector3(1.34, 0.24, 1.72), _material(blanket_color, 0.9))
-	_create_child_box(bed, Vector3(0, 0.73, -0.76), Vector3(1.18, 0.16, 0.42), white_material)
+	for pillow_x in [-0.32, 0.32]:
+		_create_child_box(bed, Vector3(pillow_x, 0.70, -0.70), Vector3(0.55, 0.16, 0.39), white_material)
+	_create_child_box(bed, Vector3(0, 0.64, -1.02), Vector3(1.52, 1.05, 0.09), wood_material, false)
+	_create_child_box(bed, Vector3(0, 0.61, 0.57), Vector3(1.36, 0.06, 0.34), ApartmentMaterials.surface("fabric", blanket_color.lightened(0.28), 0.96), false)
+	for slat in range(7):
+		_create_child_box(bed, Vector3(-0.63 + slat * 0.21, 0.84, -0.966), Vector3(0.025, 0.49, 0.016), dark_material, false)
 
 
 func _create_sofa(position: Vector3, rotation_y: float, color: Color) -> void:
@@ -2002,11 +2251,18 @@ func _create_sofa(position: Vector3, rotation_y: float, color: Color) -> void:
 	sofa.position = _expanded(position)
 	sofa.rotation.y = rotation_y
 	add_child(sofa)
-	var material := _material(color, 0.95)
+	var material := ApartmentMaterials.surface("fabric", color, 0.95)
 	_create_child_box(sofa, Vector3(0, 0.34, 0), Vector3(2.25, 0.48, 0.82), material)
 	_create_child_box(sofa, Vector3(0, 0.83, 0.33), Vector3(2.25, 0.64, 0.22), material)
 	_create_child_box(sofa, Vector3(-1.03, 0.63, 0), Vector3(0.2, 0.55, 0.82), material)
 	_create_child_box(sofa, Vector3(1.03, 0.63, 0), Vector3(0.2, 0.55, 0.82), material)
+	for seat_x in [-0.60, 0.0, 0.60]:
+		_create_child_box(sofa, Vector3(seat_x, 0.61, -0.07), Vector3(0.57, 0.10, 0.57), material, false)
+		_create_child_box(sofa, Vector3(seat_x, 0.88, 0.19), Vector3(0.57, 0.45, 0.08), material, false)
+		_create_child_box(sofa, Vector3(seat_x, 0.638, -0.357), Vector3(0.54, 0.012, 0.012), _material(color.lightened(0.3), 0.95), false)
+	for foot_x in [-0.91, 0.91]:
+		for foot_z in [-0.28, 0.28]:
+			_create_child_box(sofa, Vector3(foot_x, 0.06, foot_z), Vector3(0.10, 0.12, 0.10), wood_material, false)
 	_create_child_box(sofa, Vector3(-0.48, 0.69, -0.28), Vector3(0.48, 0.16, 0.42), _material(Color("ffd45c"), 0.9), false)
 	_create_child_box(sofa, Vector3(0.48, 0.69, -0.28), Vector3(0.48, 0.16, 0.42), _material(Color("f47cb7"), 0.9), false)
 
@@ -2014,7 +2270,9 @@ func _create_sofa(position: Vector3, rotation_y: float, color: Color) -> void:
 func _create_rug(position: Vector3, size: Vector2, color: Color) -> void:
 	position = _expanded(position)
 	_create_box("RugBorder", Vector3(position.x, 0.023, position.z), Vector3(size.x + 0.12, 0.02, size.y + 0.12), _material(color.darkened(0.34), 0.96), false)
-	_create_box("CartoonRug", Vector3(position.x, 0.039, position.z), Vector3(size.x, 0.025, size.y), _material(color, 0.94), false)
+	_create_box("CartoonRug", Vector3(position.x, 0.039, position.z), Vector3(size.x, 0.025, size.y), ApartmentMaterials.surface("fabric", color, 0.94), false)
+	for side in [-1.0, 1.0]:
+		_create_box("RugWovenStripe", Vector3(position.x + side * (size.x * 0.5 - 0.16), 0.053, position.z), Vector3(0.045, 0.002, size.y - 0.12), white_material, false)
 
 
 func _create_floor_lamp(position: Vector3, shade_color: Color) -> void:

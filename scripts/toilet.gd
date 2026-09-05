@@ -76,6 +76,8 @@ func setup(id: int, porcelain_material: StandardMaterial3D) -> void:
 
 
 func interact(player: Node) -> void:
+	if _animation_time <= 0.0 and player.get("game"):
+		player.game.emit_world_sound("flush", global_position)
 	if player.has_method("register_toilet_flush"):
 		player.register_toilet_flush(toilet_id)
 	_animation_time = 0.75
