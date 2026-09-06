@@ -7,6 +7,8 @@ const ToiletScript = preload("res://scripts/toilet.gd")
 const ChairScript = preload("res://scripts/chair.gd")
 const ApartmentMaterials = preload("res://scripts/apartment_materials.gd")
 const SecondFloor = preload("res://scripts/second_floor.gd")
+const SingleplayerCombat = preload("res://scripts/singleplayer_combat.gd")
+const ApartmentPolish = preload("res://scripts/apartment_polish.gd")
 
 const APARTMENT_SCALE := 2.0
 const PLAN_SCALE := 0.02 * APARTMENT_SCALE
@@ -35,6 +37,12 @@ var ui_status: Label
 var replay_button: Button
 var lives_selector: OptionButton
 var floor_selector: OptionButton
+var difficulty_selector: OptionButton
+var selected_difficulty := "normal"
+var pause_menu: Control
+var result_title: Label
+var round_stats := preload("res://scripts/round_stats.gd").new()
+var qa_runner: RefCounted
 var selected_floor_plan := "basment"
 var map_nodes: Array[Node] = []
 var hud_root: Control
@@ -99,8 +107,12 @@ func _ready() -> void:
 	_setup_materials()
 	_load_floor_plan("2nd floor" if "--second-floor" in OS.get_cmdline_user_args() else "basment")
 	_create_ui()
+	Settings.changed.connect(_apply_floor_style)
 	Diagnostics.log_event("game_scene_ready", {"qa_mode": not OS.get_cmdline_user_args().is_empty()})
-	if "--qa-capture" in OS.get_cmdline_user_args():
+	if "--qa-singleplayer" in OS.get_cmdline_user_args():
+		qa_runner = preload("res://tools/test_singleplayer.gd").new()
+		qa_runner.run.call_deferred(self)
+	elif "--qa-capture" in OS.get_cmdline_user_args():
 		_start_round()
 		_capture_qa_frame.call_deferred()
 	elif "--qa-smoke" in OS.get_cmdline_user_args():
@@ -147,6 +159,9 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_poll_upnp_setup()
+	if not network_match_started and round_stats.active and not round_over:
+		round_stats.tick(delta)
+		_update_singleplayer_lives()
 	if player and is_instance_valid(player):
 		ui_prompt.text = player.get_interaction_prompt()
 	if banner_time > 0.0:
@@ -450,7 +465,7 @@ func _run_qa_smoke() -> void:
 		player.equip_weapon(weapon_test[0])
 		assert(player.current_weapon == weapon_test[0] and player.damage == weapon_test[1] and player.weapon_damage_text() == weapon_test[2], "Every standard weapon must equip with its own damage profile")
 	var blast_target := combatants[1] as ApartmentBot
-	spawn_explosion(blast_target.global_position, player, 2.6, 90)
+	spawn_explosion(blast_target.global_position + Vector3.UP * 0.75, player, 2.6, 90, blast_target)
 	assert(blast_target.health == 10, "A direct bazooka blast must deal 90 damage")
 	blast_target.health = 100
 	assert(selected_lives == 2 and lives_selector.item_count == 4, "The menu must offer the configured lives choices")
@@ -484,7 +499,7 @@ func _run_qa_smoke() -> void:
 	await get_tree().process_frame
 	assert(loss_root.visible and not menu_root.visible and not hud_root.visible and player == null and combatants.is_empty(), "Death must display the loss screen")
 	assert(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE and not replay_button.visible, "Death menu must release the mouse and hide replay")
-	assert(get_node_or_null("FloorplanOverlay") != null and get_node_or_null("RoomFloorFinish") == null, "The floor-plan PNG must be the default floor")
+	assert(get_node_or_null("FloorplanOverlay") != null and get_node("FloorplanOverlay").visible == Settings.floorplan_floor, "The floor drawing must follow the saved setting")
 	loss_menu_button.pressed.emit()
 	assert(menu_root.visible and not loss_root.visible, "Main Menu must dismiss the loss screen")
 	_on_single_player_pressed()
@@ -507,6 +522,10 @@ func _run_qa_smoke() -> void:
 	assert(not test_bot.is_alive and test_bot.lives_remaining == 1, "A third rainbow-rifle bullet must spend one bot life")
 	await get_tree().create_timer(1.2).timeout
 	assert(test_bot.is_alive and test_bot.health == 100, "A bot with lives remaining must respawn at full health")
+	assert(test_bot.spawn_protection_remaining > 0, "Respawn must grant visible arrival protection")
+	# Actors are frozen in this synthetic test; expire grace explicitly before
+	# testing elimination. The bot QA separately tests its real timer/damage gate.
+	test_bot.spawn_protection_remaining = 0
 	for index in range(1, combatants.size()):
 		var bot := combatants[index] as ApartmentBot
 		if bot.is_alive:
@@ -514,6 +533,7 @@ func _run_qa_smoke() -> void:
 		if bot.lives_remaining > 0:
 			await get_tree().create_timer(1.2).timeout
 			assert(bot.is_alive and bot.health == 100, "Every bot must respawn while it has another life")
+			bot.spawn_protection_remaining = 0
 			bot.apply_damage(999, player)
 	await get_tree().create_timer(0.25).timeout
 	assert(round_over and replay_button.visible, "Round end must offer a replay button")
@@ -641,6 +661,9 @@ func _load_floor_plan(map_name: String) -> void:
 		_build_furniture()
 		_build_toilets()
 		_build_navigation_graph()
+	_build_optional_floor_finishes()
+	ApartmentPolish.build(self)
+	_apply_floor_style()
 	for node in get_children():
 		if node not in existing:
 			map_nodes.append(node)
@@ -1062,11 +1085,55 @@ func _create_toilet(id: int, position: Vector3, rotation_y: float) -> void:
 	add_child(toilet)
 
 
+func get_toilets() -> Array[Node3D]:
+	var toilets: Array[Node3D] = []
+	for child in get_children():
+		if child is FlushableToilet:
+			toilets.append(child)
+	return toilets
+
+
+func _build_optional_floor_finishes() -> void:
+	var before := get_children()
+	if selected_floor_plan == "basment":
+		_build_room_floors()
+	else:
+		var tile := ApartmentMaterials.surface("tile", Color("b8dcd6"), 0.72)
+		for rect in [Rect2(112, 87, 226, 268), Rect2(866, 112, 171, 283), Rect2(851, 697, 194, 134), Rect2(1045, 580, 303, 262)]:
+			var a := SecondFloor.point(rect.position.x, rect.position.y)
+			var b := SecondFloor.point(rect.end.x, rect.end.y)
+			_create_box("RoomFloorFinish", (a + b) * 0.5 + Vector3.UP * 0.006, Vector3(b.x-a.x, 0.01, b.z-a.z), tile, false)
+	for child in get_children():
+		if child not in before:
+			child.add_to_group("optional_room_floors")
+
+
+func _apply_floor_style() -> void:
+	var overlay := get_node_or_null("FloorplanOverlay") as Node3D
+	if overlay:
+		overlay.visible = Settings.floorplan_floor or network_match_started
+	for finish in get_tree().get_nodes_in_group("optional_room_floors"):
+		finish.visible = not Settings.floorplan_floor and not network_match_started
+
+
+func _clear_round_effects() -> void:
+	for effect in get_tree().get_nodes_in_group("singleplayer_round_effects"):
+		if not effect.is_queued_for_deletion():
+			effect.set_process(false)
+			effect.set_physics_process(false)
+			effect.queue_free()
+
+
 func _start_round() -> void:
+	if pause_menu:
+		pause_menu.close_for_transition()
+	_clear_round_effects()
+	SoundEffects.stop_all()
+	round_stats.start(selected_floor_plan, selected_difficulty, selected_lives)
 	if loss_root:
 		loss_root.visible = false
 	round_serial += 1
-	Diagnostics.log_event("single_player_round_started", {"lives": selected_lives, "bots": 3})
+	Diagnostics.log_event("single_player_round_started", {"lives": selected_lives, "bots": 3, "difficulty": selected_difficulty})
 	for old_combatant in combatants:
 		if is_instance_valid(old_combatant):
 			old_combatant.queue_free()
@@ -1077,6 +1144,10 @@ func _start_round() -> void:
 	replay_button.visible = false
 	hud_root.visible = true
 	menu_root.visible = false
+	multiplayer_menu_root.visible = false
+	death_menu_pending = false
+	lost_multiplayer = false
+	_apply_floor_style()
 
 	spawn_positions = _network_spawn_positions()
 	var available_spawns := spawn_positions.duplicate()
@@ -1099,6 +1170,7 @@ func _start_round() -> void:
 		var bot := BotScript.new() as ApartmentBot
 		bot.setup(index + 1, colors[index])
 		bot.game = self
+		bot.difficulty = selected_difficulty
 		bot.lives_remaining = selected_lives
 		bot.position = available_spawns.pop_back()
 		bot.died.connect(_on_combatant_died)
@@ -1106,8 +1178,11 @@ func _start_round() -> void:
 		combatants.append(bot)
 
 	ui_health.text = "HEALTH  100"
+	ui_health.modulate = Color.WHITE
+	combat_feedback.hit_time = 0.0
+	combat_feedback.damage_time = 0.0
 	ui_toilets.text = "TOILETS  0 / 3    PISTOL  24"
-	ui_lives.text = "LIFE  1"
+	_update_singleplayer_lives()
 	ui_toilets.modulate = Color.WHITE
 	_show_banner("LAST ONE STANDING", 2.4)
 
@@ -1139,7 +1214,7 @@ func _on_combatant_died(combatant: Node) -> void:
 
 	var contenders := _get_remaining_contenders()
 	if contenders.size() <= 1:
-		await get_tree().create_timer(0.15).timeout
+		await get_tree().create_timer(0.15, network_match_started).timeout
 		if death_round == round_serial:
 			_finish_round(contenders)
 		return
@@ -1147,7 +1222,7 @@ func _on_combatant_died(combatant: Node) -> void:
 	if combatant.lives_remaining > 0:
 		if combatant == player:
 			_show_banner("OOPS!\nRESPAWNING...", 1.1)
-		await get_tree().create_timer(1.1).timeout
+		await get_tree().create_timer(1.1, network_match_started).timeout
 		if death_round == round_serial and not round_over and is_instance_valid(combatant):
 			combatant.respawn_at(_choose_respawn_position(combatant), rng.randf_range(-PI, PI))
 			Diagnostics.log_event("combatant_respawned", {"name": combatant.combatant_name(), "lives_remaining": combatant.lives_remaining, "networked": network_match_started})
@@ -1169,6 +1244,28 @@ func _get_remaining_contenders() -> Array[Node]:
 func _choose_respawn_position(respawning: Node3D) -> Vector3:
 	var candidates := spawn_positions.duplicate()
 	candidates.shuffle()
+	if not network_match_started:
+		# Prefer covered spawns with breathing room; if none are hidden, use
+		# the farthest clear one. Bot grace prevents shooting during arrival.
+		var best := respawning.global_position
+		var best_score := -INF
+		for candidate: Vector3 in candidates:
+			if not get_world_3d().direct_space_state.intersect_shape(_walk_query(candidate)).is_empty():
+				continue
+			var nearest := INF
+			var exposed := false
+			for other in combatants:
+				if other == respawning or not is_instance_valid(other) or not other.is_alive:
+					continue
+				nearest = minf(nearest, candidate.distance_to(other.global_position))
+				var query := PhysicsRayQueryParameters3D.create(other.global_position + Vector3.UP * 1.3, candidate + Vector3.UP, 1)
+				if get_world_3d().direct_space_state.intersect_ray(query).is_empty():
+					exposed = true
+			var score := minf(nearest, 50.0) + (100.0 if not exposed and nearest >= 3.0 else 0.0)
+			if score > best_score:
+				best = candidate
+				best_score = score
+		return best
 	for candidate: Vector3 in candidates:
 		var clear := true
 		for combatant in combatants:
@@ -1199,6 +1296,8 @@ func _finish_round(contenders: Array[Node]) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if network_match_started and multiplayer.is_server():
 		_network_round_finished.rpc(winner)
+	elif not network_match_started:
+		_show_singleplayer_results(contenders.size() == 1 and contenders[0] == player)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1225,6 +1324,9 @@ func _on_player_health_changed(current: int, _maximum: int) -> void:
 func _return_to_menu_after_death() -> void:
 	# Defer teardown until damage signals and network snapshot application finish.
 	lost_multiplayer = network_match_started
+	var result_text := ""
+	if not lost_multiplayer:
+		result_text = round_stats.finish(false, player.flushed_toilets.size() if is_instance_valid(player) else 0, not _is_qa_run())
 	_close_network_connection()
 	_clear_combatants()
 	lobby_players.clear()
@@ -1238,10 +1340,56 @@ func _return_to_menu_after_death() -> void:
 	menu_root.visible = false
 	multiplayer_menu_root.visible = false
 	hud_root.visible = false
-	loss_note.text = "Play Again opens multiplayer setup to host or join another match." if lost_multiplayer else "Try again on %s. Your bot-lives setting is preserved." % selected_floor_plan
+	result_title.text = "YOU LOST"
+	result_title.modulate = Color.WHITE
+	result_title.add_theme_color_override("font_color", Color("ff789a"))
+	loss_note.text = "Play Again opens multiplayer setup to host or join another match." if lost_multiplayer else result_text + "\n" + _round_rules_text()
 	loss_root.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	loss_replay_button.grab_focus()
+
+
+func _is_qa_run() -> bool:
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--qa-"):
+			return true
+	return false
+
+
+func _show_singleplayer_results(won: bool) -> void:
+	_clear_round_effects()
+	lost_multiplayer = false
+	result_title.text = "YOU WIN!" if won else "YOU LOST"
+	result_title.add_theme_color_override("font_color", Color("ffe879") if won else Color("ff789a"))
+	loss_note.text = round_stats.finish(won, player.flushed_toilets.size() if is_instance_valid(player) else 0, not _is_qa_run())
+	loss_note.text += "\n" + _round_rules_text()
+	hud_root.visible = false
+	loss_root.visible = true
+	loss_replay_button.grab_focus()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _update_singleplayer_lives() -> void:
+	if network_match_started or not ui_lives:
+		return
+	var remaining := 0
+	for combatant in combatants:
+		if is_instance_valid(combatant) and combatant != player:
+			remaining += combatant.lives_remaining
+	ui_lives.text = "YOU  1 LIFE    ENEMY LIVES  %d    %s" % [remaining, round_stats.clock_text()]
+
+
+func _round_rules_text() -> String:
+	return "%s · %s · %d bot %s" % [selected_floor_plan, selected_difficulty.capitalize(), selected_lives, "life" if selected_lives == 1 else "lives"]
+
+
+func record_player_shot(shooter: Node) -> int:
+	return round_stats.record_shot() if shooter == player and not network_match_started else -1
+
+
+func record_projectile_hit(shooter: Node, shot_id: int) -> void:
+	if shooter == player and not network_match_started:
+		round_stats.record_hit(shot_id)
 
 
 func _play_again_after_loss() -> void:
@@ -1301,7 +1449,7 @@ func _create_ui() -> void:
 	hud_root.add_child(ui_lives)
 
 	var controls := _ui_label(24, Vector2(28, 650), 15)
-	controls.text = "WASD MOVE    SHIFT SPRINT    SPACE JUMP    LMB FIRE    RMB AIM    E USE / STAND    ESC MOUSE"
+	controls.text = "WASD MOVE    SHIFT SPRINT    SPACE JUMP    LMB FIRE    RMB AIM    E USE / STAND    ESC MENU"
 	controls.modulate = Color(1, 1, 1, 0.62)
 	hud_root.add_child(controls)
 
@@ -1352,6 +1500,9 @@ func _create_ui() -> void:
 	_create_main_menu(canvas)
 	_create_multiplayer_menu(canvas)
 	_create_loss_screen(canvas)
+	pause_menu = preload("res://scripts/pause_menu.gd").new()
+	pause_menu.game = self
+	canvas.add_child(pause_menu)
 	hud_root.visible = false
 
 
@@ -1365,8 +1516,8 @@ func _create_loss_screen(canvas: CanvasLayer) -> void:
 	background.color = Color("17121f")
 	loss_root.add_child(background)
 	var panel := PanelContainer.new()
-	panel.position = Vector2(350,155)
-	panel.size = Vector2(580,410)
+	panel.position = Vector2(350,115)
+	panel.size = Vector2(580,490)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color("211827")
 	style.border_color = Color("ed5b82")
@@ -1381,12 +1532,12 @@ func _create_loss_screen(canvas: CanvasLayer) -> void:
 	var content := VBoxContainer.new()
 	content.add_theme_constant_override("separation",20)
 	panel.add_child(content)
-	var title := Label.new()
-	title.text = "YOU LOST"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size",52)
-	title.add_theme_color_override("font_color",Color("ff789a"))
-	content.add_child(title)
+	result_title = Label.new()
+	result_title.text = "YOU LOST"
+	result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	result_title.add_theme_font_size_override("font_size",52)
+	result_title.add_theme_color_override("font_color",Color("ff789a"))
+	content.add_child(result_title)
 	loss_note = Label.new()
 	loss_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	loss_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1441,7 +1592,7 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	menu_root.add_child(panel)
 
 	var content := VBoxContainer.new()
-	content.add_theme_constant_override("separation", 14)
+	content.add_theme_constant_override("separation", 8)
 	content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	content.offset_left = 52
 	content.offset_top = 38
@@ -1467,7 +1618,7 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	content.add_child(subtitle)
 
 	var spacer := Control.new()
-	spacer.custom_minimum_size.y = 12
+	spacer.custom_minimum_size.y = 2
 	content.add_child(spacer)
 
 	var lives_row := HBoxContainer.new()
@@ -1502,6 +1653,19 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	floor_selector.item_selected.connect(func(index: int): _load_floor_plan("2nd floor" if index == 1 else "basment"))
 	floor_row.add_child(floor_selector)
 	content.add_child(floor_row)
+	var difficulty_row := HBoxContainer.new()
+	var difficulty_label := Label.new()
+	difficulty_label.text = "BOT DIFFICULTY"
+	difficulty_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	difficulty_row.add_child(difficulty_label)
+	difficulty_selector = OptionButton.new()
+	difficulty_selector.custom_minimum_size = Vector2(180, 40)
+	for level in ["Easy", "Normal", "Hard"]:
+		difficulty_selector.add_item(level)
+	difficulty_selector.select(1)
+	difficulty_selector.item_selected.connect(func(index: int): selected_difficulty = ["easy", "normal", "hard"][index])
+	difficulty_row.add_child(difficulty_selector)
+	content.add_child(difficulty_row)
 
 	var single_player := _menu_button("SINGLE PLAYER")
 	single_player.pressed.connect(_on_single_player_pressed)
@@ -1510,6 +1674,11 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	var multiplayer := _menu_button("MULTIPLAYER")
 	multiplayer.pressed.connect(_show_multiplayer_menu)
 	content.add_child(multiplayer)
+	var settings_button := _menu_button("SETTINGS")
+	settings_button.custom_minimum_size.y = 44
+	settings_button.add_theme_font_size_override("font_size", 18)
+	settings_button.pressed.connect(func(): pause_menu.open_settings())
+	content.add_child(settings_button)
 
 	crash_logs_button = _menu_button("OPEN CRASH LOGS")
 	crash_logs_button.custom_minimum_size.y = 48
@@ -1727,6 +1896,12 @@ func _menu_button(text: String) -> Button:
 
 
 func _show_main_menu() -> void:
+	if pause_menu:
+		pause_menu.close_for_transition()
+	if not network_match_started:
+		round_stats.active = false
+		_clear_combatants()
+		round_over = false
 	if loss_root:
 		loss_root.visible = false
 	SoundEffects.stop_all()
@@ -1933,6 +2108,10 @@ func _start_network_match() -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array, map_name: String) -> void:
+	if pause_menu:
+		pause_menu.close_for_transition()
+	round_stats.active = false
+	_clear_round_effects()
 	_clear_combatants()
 	if selected_floor_plan != map_name:
 		_load_floor_plan(map_name)
@@ -2072,6 +2251,7 @@ func _remove_network_player(disconnected_peer_id: int) -> void:
 
 func _clear_combatants() -> void:
 	round_serial += 1
+	_clear_round_effects()
 	for old_combatant in combatants:
 		if is_instance_valid(old_combatant):
 			old_combatant.queue_free()
@@ -2316,6 +2496,11 @@ func report_combat_hit(victim: Node3D, attacker: Node, killed: bool) -> void:
 			var victim_id: int = victim.peer_id if victim is NetworkFpsPlayer else 0
 			_receive_combat_feedback.rpc(victim_id,attacker_id,source_position,killed)
 	else:
+		if attacker == player and victim != player and round_stats.active:
+			if not get_meta("projectile_damage", false):
+				round_stats.record_hit(player.active_shot_id)
+			if killed:
+				round_stats.kills += 1
 		_present_combat_feedback(victim == player,attacker == player,source_position,killed)
 
 
@@ -2359,7 +2544,16 @@ func spawn_impact(position: Vector3, normal: Vector3, powered_up: bool) -> void:
 		_spawn_network_impact.rpc(position, normal, powered_up)
 
 
-func spawn_explosion(position: Vector3, attacker: Node, radius: float, max_damage: int) -> void:
+func spawn_rocket(origin: Vector3, direction: Vector3, attacker: Node, max_damage: int = 90) -> void:
+	if not network_match_started and not round_over:
+		SingleplayerCombat.spawn_rocket(self, origin, direction, attacker, max_damage)
+
+
+func spawn_explosion(position: Vector3, attacker: Node, radius: float, max_damage: int, direct_hit: Node = null, normal: Vector3 = Vector3.ZERO, shot_id: int = -1) -> void:
+	if not network_match_started:
+		SingleplayerCombat.explode(self, position, attacker, radius, max_damage, direct_hit, normal, shot_id)
+		ApartmentPolish.wobble_near(self, position, radius)
+		return
 	if network_match_started and not multiplayer.is_server():
 		return
 	for combatant in combatants:

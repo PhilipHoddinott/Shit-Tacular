@@ -30,12 +30,22 @@ Confirmed hits flash a white hit marker; lethal hits flash gold. Incoming damage
 
 Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and lock in the glowing rainbow rifle, which cycles colors and deals 40 damage per bullet for the rest of the round, including after respawning.
 
+## Single-player polish
+
+- **Pause and settings:** Escape opens a real pause menu with Resume, Restart, and Main Menu. Movement, rockets, regeneration, and bot respawn timers freeze. Settings are also available from the main menu: mouse sensitivity, field of view, independent music/SFX volume, and music on/off. Preferences save locally and can be reset to defaults.
+- **Rockets:** The bazooka launches a visible rocket with a smoke trail and a cartoon “KA-POOP!” explosion. Direct hits do 90 damage; splash falls off from the target's body center and is blocked by walls. The shooter remains immune to their own blast. Walls also block toilet/chair interactions.
+- **Roommates:** Choose Easy, Normal, or Hard reaction speed, accuracy, and firing cadence. Bots strafe safely and sometimes visit reachable toilets to earn the same weapon rewards as you. Their toilet progress and weapons survive respawning. Respawns prefer covered, distant locations; a pulsing cyan ring marks 1.2 seconds of protection during which a bot cannot shoot or take damage.
+- **Round progress:** Numbered gold toilet markers turn green after your flushes. The HUD shows remaining enemy lives and elapsed time. Win/loss screens show kills, accuracy, time, and toilets flushed; fastest wins are saved separately for each map/difficulty/bot-lives combination. Accuracy counts trigger pulls that damage an opponent, so multiple shotgun pellets or a rocket multikill count as one successful shot.
+- **Apartment:** Added compact cover cabinets, silly signs and trophies, cartoon bot faces, and decor that wobbles near explosions. The floor-plan drawing remains the default. Uncheck **Floor-plan drawing on floor** in Settings for wood/tile finishes; the minimap still shows the plan.
+
+These combat and pause changes target single player; the existing multiplayer protocol and routes have not been redesigned.
+
 ## Controls
 
 “Flush Funk,” generated locally with ACE-Step, plays quietly across menus and matches.
 Press **M** to pause or resume the music independently of game sound effects.
 
-The bottom-left minimap shows the selected floor plan. Your cyan arrow indicates your position and facing direction; red dots show all other living players or bots, including through walls. Eliminated combatants disappear, and respawning bots reappear.
+The bottom-left minimap shows the selected floor plan. Your cyan arrow indicates your position and facing direction; red dots show all other living players or bots, including through walls. Eliminated combatants disappear, and respawning bots reappear. In single player, gold numbered toilet markers turn green as you flush them.
 
 | Control | Action |
 | --- | --- |
@@ -45,7 +55,7 @@ The bottom-left minimap shows the selected floor plan. Your cyan arrow indicates
 | Left mouse | Fire the equipped weapon |
 | Hold right mouse | Aim / zoom (stronger magnification for rifles) |
 | `E` | Flush a toilet, sit in a dining chair, or stand up |
-| `Escape` | Release or recapture the mouse |
+| `Escape` | Pause / resume single player; release or recapture the mouse in multiplayer |
 | `R` | Restart after the round ends |
 
 ## Multiplayer playtest
@@ -103,3 +113,20 @@ The GitHub-ready 1280×640 social preview is stored at `assets/github/social-pre
 2. Improve art, sound, bot navigation, and round presentation.
 3. Add room codes, NAT traversal/relay support, and clearer connection diagnostics.
 4. Package Windows builds for wider playtesting.
+
+## Single-player checks
+
+With the Godot executable on your PATH, run these from the project directory. They do not connect to multiplayer services:
+
+```text
+godot --headless --path . --quit-after 1800 -- --qa-singleplayer
+godot --headless --path . --quit-after 1800 -- --qa-smoke
+godot --headless --path . --quit-after 1800 -- --qa-maps
+godot --headless --path . --quit-after 1800 -- --qa-combat
+godot --headless --path . --script res://tools/qa_rockets.gd --quit-after 1800
+godot --headless --path . --script res://tools/test_bot_singleplayer.gd --quit-after 1800
+godot --headless --path . --script res://tools/test_pause_settings.gd --quit-after 3000
+godot --headless --path . --script res://tools/test_round_results.gd --quit-after 1800 -- --qa-results-marker
+```
+
+Remove `--headless` from the pause-settings test to also check captured-mouse sensitivity and aiming. Rendered menu, pause, floor, bathroom, and results captures can be generated with `godot --path . --script res://tools/capture_singleplayer.gd -- --qa-polish`; images are saved under the ignored `artifacts/` directory. QA runs do not save personal-best records.

@@ -80,6 +80,8 @@ func _format_line(level: String, event_name: String, details: Dictionary) -> Str
 
 
 func _find_previous_crash_log() -> void:
+	if not DirAccess.dir_exists_absolute(LOG_DIRECTORY):
+		return
 	var files := DirAccess.get_files_at(LOG_DIRECTORY)
 	if files.is_empty():
 		return

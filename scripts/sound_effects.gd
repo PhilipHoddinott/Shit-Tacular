@@ -21,6 +21,7 @@ func play_effect(effect: String, location: Vector3) -> void:
 	if not streams.has(effect) or get_child_count() >= MAX_VOICES:
 		return
 	var voice := AudioStreamPlayer3D.new()
+	voice.bus = "SFX"
 	voice.stream = streams[effect]
 	voice.volume_db = -12.0 if effect == "impact" else -6.0
 	voice.unit_size = 4.0

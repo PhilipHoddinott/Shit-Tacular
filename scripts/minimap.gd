@@ -34,7 +34,7 @@ func refresh_map() -> void:
 		return
 	floor_texture = material.albedo_texture
 	world_bounds = Rect2(Vector2(overlay.position.x,overlay.position.z)-plane.size*.5,plane.size)
-	var available := Vector2(size.x-24,size.y-68)
+	var available := Vector2(size.x-24,size.y-82)
 	var scale_factor := minf(available.x/plane.size.x,available.y/plane.size.y)
 	var extent := plane.size*scale_factor
 	map_rect = Rect2(Vector2((size.x-extent.x)*.5,34+(available.y-extent.y)*.5),extent)
@@ -61,6 +61,13 @@ func _draw() -> void:
 	if not floor_texture:
 		return
 	draw_texture_rect(floor_texture,map_rect,false,Color(.8,.8,.85))
+	if not game.network_match_started:
+		for toilet in game.get_toilets():
+			var p := map_position(toilet.global_position)
+			var visited: bool = is_instance_valid(game.player) and game.player.has_flushed_toilet(toilet.toilet_id)
+			var color := Color("80efa5") if visited else Color("ffdb76")
+			draw_style_box(_toilet_marker(color), Rect2(p - Vector2(7, 9), Vector2(14, 18)))
+			draw_string(font, p + Vector2(-4, 5), str(toilet.toilet_id), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("17121f"))
 	var actors := visible_combatants()
 	for actor in actors:
 		if actor == game.player:
@@ -82,3 +89,14 @@ func _draw() -> void:
 	draw_string(font,Vector2(27,size.y-11),"You",HORIZONTAL_ALIGNMENT_LEFT,-1,13)
 	draw_circle(Vector2(87,size.y-16),4,Color("ff657e"))
 	draw_string(font,Vector2(98,size.y-11),"Others · %d" % maxi(0,actors.size()-1),HORIZONTAL_ALIGNMENT_LEFT,-1,13)
+	if not game.network_match_started:
+		draw_string(font, Vector2(12, size.y-33), "Toilets: gold = loot · green = flushed", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("f7e1b9"))
+
+
+func _toilet_marker(color: Color) -> StyleBoxFlat:
+	var marker := StyleBoxFlat.new()
+	marker.bg_color = color
+	marker.border_color = Color("17121f")
+	marker.set_border_width_all(2)
+	marker.set_corner_radius_all(4)
+	return marker

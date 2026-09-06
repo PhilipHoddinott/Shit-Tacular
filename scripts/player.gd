@@ -37,6 +37,7 @@ var weapon_root: Node3D
 var weapon_material: StandardMaterial3D
 var muzzle_flash: OmniLight3D
 var fire_cooldown := 0.0
+var active_shot_id := -1
 var recoil := 0.0
 var rainbow_time := 0.0
 var hip_weapon_position := Vector3.ZERO
@@ -67,7 +68,7 @@ func _ready() -> void:
 	camera = Camera3D.new()
 	camera.name = "Camera"
 	camera.current = true
-	camera.fov = 78.0
+	camera.fov = Settings.fov
 	neck.add_child(camera)
 
 	_create_weapon()
@@ -218,11 +219,11 @@ func _add_weapon_cylinder(position: Vector3, radius: float, length: float, mater
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and input_enabled:
-		var zoom_sensitivity := camera.fov / 78.0
-		rotate_y(-event.relative.x * MOUSE_SENSITIVITY * zoom_sensitivity)
-		neck.rotate_x(-event.relative.y * MOUSE_SENSITIVITY * zoom_sensitivity)
+		var zoom_sensitivity := camera.fov / Settings.fov
+		rotate_y(-event.relative.x * MOUSE_SENSITIVITY * Settings.sensitivity * zoom_sensitivity)
+		neck.rotate_x(-event.relative.y * MOUSE_SENSITIVITY * Settings.sensitivity * zoom_sensitivity)
 		neck.rotation.x = clampf(neck.rotation.x, deg_to_rad(-88.0), deg_to_rad(88.0))
-	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+	elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE and game and game.network_match_started:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else Input.MOUSE_MODE_CAPTURED
 
 
@@ -280,13 +281,14 @@ func _update_aim(delta: float) -> void:
 	if not camera.current:
 		return
 	var aiming := is_alive and input_enabled and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_action_pressed("aim")
-	var target_fov := 78.0
+	var target_fov := Settings.fov
 	if aiming:
 		match current_weapon:
 			WEAPON_RIFLE, WEAPON_RAINBOW_RIFLE: target_fov = 38.0
 			WEAPON_SHOTGUN: target_fov = 60.0
 			WEAPON_BAZOOKA: target_fov = 48.0
 			_: target_fov = 55.0
+		target_fov *= Settings.fov / 78.0
 	var blend := 1.0 - exp(-14.0 * delta)
 	camera.fov = lerpf(camera.fov, target_fov, blend)
 	var target_position := hip_weapon_position
@@ -305,6 +307,8 @@ func _update_aim(delta: float) -> void:
 func _fire() -> void:
 	if fire_cooldown > 0.0:
 		return
+	if game and game.has_method("record_player_shot"):
+		active_shot_id = game.record_player_shot(self)
 	if game:
 		game.emit_world_sound(current_weapon, global_position + Vector3.UP)
 	match current_weapon:
@@ -346,6 +350,9 @@ func _fire_hitscan(origin: Vector3, direction: Vector3) -> void:
 
 
 func _fire_bazooka(origin: Vector3, direction: Vector3) -> void:
+	if game and not game.network_match_started and game.has_method("spawn_rocket"):
+		game.spawn_rocket(origin, direction, self, damage)
+		return
 	var end := origin + direction * FIRE_DISTANCE
 	var query := PhysicsRayQueryParameters3D.create(origin, end, 3, [self])
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
@@ -357,7 +364,9 @@ func _fire_bazooka(origin: Vector3, direction: Vector3) -> void:
 func _interact() -> void:
 	var origin := camera.global_position
 	var end := origin + -camera.global_basis.z * INTERACT_DISTANCE
-	var query := PhysicsRayQueryParameters3D.create(origin, end, 4, [self])
+	var interaction_mask := 4 if game and game.network_match_started else 5
+	var query := PhysicsRayQueryParameters3D.create(origin, end, interaction_mask, [self])
+	query.hit_from_inside = interaction_mask == 5
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 	if result and result.collider.has_method("interact"):
 		result.collider.interact(self)
@@ -370,7 +379,9 @@ func get_interaction_prompt() -> String:
 		return "Press E to stand"
 	var origin := camera.global_position
 	var end := origin + -camera.global_basis.z * INTERACT_DISTANCE
-	var query := PhysicsRayQueryParameters3D.create(origin, end, 4, [self])
+	var interaction_mask := 4 if game and game.network_match_started else 5
+	var query := PhysicsRayQueryParameters3D.create(origin, end, interaction_mask, [self])
+	query.hit_from_inside = interaction_mask == 5
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 	if result and result.collider.has_method("interaction_text"):
 		return result.collider.interaction_text(self)
