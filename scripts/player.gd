@@ -175,13 +175,11 @@ func _rebuild_weapon_visual() -> void:
 			_add_weapon_box(Vector3(0.0, -0.2, -0.35), Vector3(0.14, 0.32, 0.16), accent, Vector3(0.16, 0.0, 0.0))
 			muzzle_z = -1.08
 		_:
-			weapon_root.position = Vector3(0.31, -0.28, -0.58)
-			weapon_root.scale = Vector3.ONE * 0.82
-			_add_weapon_box(Vector3(0.0, 0.02, -0.12), Vector3(0.16, 0.15, 0.48), weapon_material)
-			_add_weapon_box(Vector3(0.0, -0.19, 0.01), Vector3(0.14, 0.32, 0.15), weapon_material, Vector3(-0.16, 0.0, 0.0))
-			_add_weapon_cylinder(Vector3(0.0, 0.035, -0.47), 0.045, 0.31, accent)
+			weapon_root.position = Vector3(0.23, -0.20, -0.46)
+			weapon_root.scale = Vector3.ONE * 0.78
+			muzzle_z = -0.627
 
-	if current_weapon not in [WEAPON_RIFLE,WEAPON_RAINBOW_RIFLE]:
+	if current_weapon in [WEAPON_SHOTGUN, WEAPON_BAZOOKA]:
 		for sight_x in [-0.035,0.035]:
 			_add_weapon_box(Vector3(sight_x,0.13,0.01),Vector3(0.012,0.03,0.025),accent)
 		_add_weapon_box(Vector3(0,0.13,muzzle_z+0.10),Vector3(0.012,0.03,0.025),weapon_material)
@@ -191,6 +189,10 @@ func _rebuild_weapon_visual() -> void:
 	muzzle_flash.omni_range = 2.6 if current_weapon == WEAPON_BAZOOKA else 2.2
 	muzzle_flash.position = Vector3(0.0, 0.03, muzzle_z)
 	weapon_root.add_child(muzzle_flash)
+	if current_weapon == WEAPON_PISTOL:
+		var viewmodel := preload("res://scripts/pistol_viewmodel.gd").new()
+		viewmodel.player = self
+		weapon_root.add_child(viewmodel)
 
 
 func _add_weapon_box(position: Vector3, size: Vector3, material: StandardMaterial3D, rotation: Vector3 = Vector3.ZERO) -> void:
@@ -295,6 +297,8 @@ func _update_aim(delta: float) -> void:
 	if aiming:
 		target_position.x = 0.0
 		target_position.y = (-0.18 if current_weapon in [WEAPON_RIFLE,WEAPON_RAINBOW_RIFLE] else -0.145) * weapon_root.scale.y
+		if current_weapon == WEAPON_PISTOL:
+			target_position.y = -0.13 * weapon_root.scale.y
 		target_position.z -= 0.20
 	var moving := minf(Vector2(velocity.x,velocity.z).length()/WALK_SPEED,1.5) if is_on_floor() and not sitting else 0.0
 	movement_phase += delta * 9.0 * moving

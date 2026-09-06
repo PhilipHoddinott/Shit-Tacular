@@ -5,4 +5,6 @@ Godot_v*_win64.exe/
 builds/
 build/
 artifacts/
+art_source/*.blend1
+art_source/*.blend2
 ACE-Step-1.5/

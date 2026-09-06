@@ -12,16 +12,16 @@ static func surface(kind: String, tint: Color, roughness: float) -> StandardMate
 				var offset := (row % 3) * 79
 				var seam := (x + offset) % 256 < 2 or y % 32 < 2
 				var grain := sin(float(x) * 0.17 + sin(float(y) * 0.8) * 2.0)
-				value = 0.88 + 0.06 * grain + 0.035 * sin(float(row) * 4.7)
+				value = 0.94 + 0.018 * grain + 0.018 * sin(float(row) * 4.7)
 				if seam:
-					value = 0.54
+					value = 0.78
 			elif kind == "tile":
 				var seam := x % 64 < 2 or y % 64 < 2
 				value = 0.93 + 0.025 * sin(float(x / 64 + y / 64) * 2.4)
 				if seam:
 					value = 0.62
 			else:
-				value = 0.93 + 0.035 * sin(float(x) * PI * 0.5) * sin(float(y) * PI * 0.5)
+				value = 0.95 + 0.02 * sin(float(x) * PI * 0.5) * sin(float(y) * PI * 0.5)
 			image.set_pixel(x, y, Color(value, value, value))
 	image.generate_mipmaps()
 	material.albedo_texture = ImageTexture.create_from_image(image)

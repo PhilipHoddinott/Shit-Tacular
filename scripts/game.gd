@@ -9,6 +9,7 @@ const ApartmentMaterials = preload("res://scripts/apartment_materials.gd")
 const SecondFloor = preload("res://scripts/second_floor.gd")
 const SingleplayerCombat = preload("res://scripts/singleplayer_combat.gd")
 const ApartmentPolish = preload("res://scripts/apartment_polish.gd")
+const LivingRoomVisuals = preload("res://scripts/living_room_visuals.gd")
 
 const APARTMENT_SCALE := 2.0
 const PLAN_SCALE := 0.02 * APARTMENT_SCALE
@@ -772,20 +773,23 @@ func _setup_materials() -> void:
 
 func _setup_world() -> void:
 	var environment := WorldEnvironment.new()
+	environment.name = "ApartmentEnvironment"
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color("15131c")
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color("e1e8f2")
-	env.ambient_light_energy = 0.48
+	env.ambient_light_color = Color("c4d6e8")
+	env.ambient_light_energy = 0.38
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	environment.environment = env
 	add_child(environment)
 
 	var sun := DirectionalLight3D.new()
+	sun.name = "WindowSunlight"
 	sun.rotation_degrees = Vector3(-62.0, -28.0, 0.0)
 	sun.light_color = Color("fff2d4")
-	sun.light_energy = 0.52
+	sun.light_energy = 0.56
+	sun.light_specular = 0.25
 	sun.shadow_enabled = true
 	add_child(sun)
 	if selected_floor_plan == "2nd floor":
@@ -801,7 +805,8 @@ func _setup_world() -> void:
 		var light := OmniLight3D.new()
 		light.position = _expanded(light_data[0])
 		light.light_color = light_data[1]
-		light.light_energy = 0.48
+		light.light_energy = 0.34
+		light.light_specular = 0.15
 		light.omni_range = 7.2
 		light.shadow_enabled = true
 		add_child(light)
@@ -948,10 +953,11 @@ func _create_window(position: Vector3, rotation_y: float, width: float, inward: 
 	spot.name = "FakeWindowLight"
 	spot.position = position + inward * 0.08 + Vector3.UP * 0.48
 	spot.light_color = Color("ffd77b")
-	spot.light_energy = 2.25
+	spot.light_energy = 1.25
+	spot.light_specular = 0.15
+	spot.shadow_enabled = true
 	spot.spot_range = 8.5
 	spot.spot_angle = 38.0
-	spot.shadow_enabled = false
 	add_child(spot)
 	spot.look_at(position + inward * 3.0 + Vector3.DOWN * 1.45, Vector3.UP)
 
@@ -2797,6 +2803,8 @@ func _create_box(object_name: String, position: Vector3, size: Vector3, material
 			_create_child_box(root, Vector3(0, door[0], size.z * 0.5 + 0.015), Vector3(size.x - 0.04, door[1], 0.035), _material(Color("b0e2e7"), 0.38), false)
 			_create_child_box(root, Vector3(-0.21, door[0], size.z * 0.5 + 0.05), Vector3(0.035, 0.26, 0.04), dark_material, false)
 		_create_child_box(root, Vector3(0.09, 0.35, size.z * 0.5 + 0.039), Vector3(0.19, 0.22, 0.008), _material(Color("fff1bd"), 0.85), false)
+	if object_name == "CoffeeTable":
+		LivingRoomVisuals.replace_coffee_table(root, size)
 	return root
 
 
@@ -2834,6 +2842,7 @@ func _create_sofa(position: Vector3, rotation_y: float, color: Color) -> void:
 			_create_child_box(sofa, Vector3(foot_x, 0.06, foot_z), Vector3(0.10, 0.12, 0.10), wood_material, false)
 	_create_child_box(sofa, Vector3(-0.48, 0.69, -0.28), Vector3(0.48, 0.16, 0.42), _material(Color("ffd45c"), 0.9), false)
 	_create_child_box(sofa, Vector3(0.48, 0.69, -0.28), Vector3(0.48, 0.16, 0.42), _material(Color("f47cb7"), 0.9), false)
+	LivingRoomVisuals.replace_sofa(sofa)
 
 
 func _create_rug(position: Vector3, size: Vector2, color: Color) -> void:

@@ -103,6 +103,10 @@ Logs may contain player names and network addresses, so review them before shari
 
 ## Project notes
 
+The first Blender graphics pass adds a rounded graphite/coral pistol with padded gloves, visible sights, equip motion, and sliding recoil. It renders separately from the apartment so nearby walls cannot cut through the hands. The living-room sofa and coffee table now use rounded Blender meshes with cushions, piping, pillows, and tapered feet. Lighting has gentler ceiling highlights, shadowed window light, and softer wood grain. Collision geometry and weapon damage are preserved.
+
+Editable `.blend` scenes and rebuilding instructions are in `art_source/README.md`. Godot uses the exported GLB assets; Blender is only needed to edit or rebuild them. For in-game screenshots and weapon-switch cleanup checks, run `godot --path . --script res://tools/capture_graphics.gd -- --qa-graphics`.
+
 The apartment uses a doubled horizontal footprint for wider rooms and less crowded firefights. The supplied floor-plan PNG is the default floor. It includes room-specific wall colors, wall panels and bathroom wall tiles, baseboards, ceiling trim, doorway casings, ceiling fixtures, fabric upholstery, detailed cabinets, furniture and small decor, fake window light, a wall-mounted television, four sittable dining chairs, and a very judgmental bathroom mirror. Furniture and wall surface textures are generated deterministically in Godot, with mipmaps, and require no asset downloads. Use `--qa-floorplan-capture` for the overhead layout check.
 
 The GitHub-ready 1280×640 social preview is stored at `assets/github/social-preview.jpg`, with its full-resolution generated source beside it.
