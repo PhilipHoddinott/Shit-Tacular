@@ -20,7 +20,7 @@ You can also launch the project from PowerShell:
 .\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64.exe --path .
 ```
 
-Choose 1, 2, 3, or 5 **bot lives** from the main menu. Every combatant begins with 100 health. Human players have one life: your death opens a loss screen with **Play Again** and **Main Menu**. Play Again starts a fresh match on the same floor plan with the same bot-lives setting. Bots respawn while lives remain. Multiplayer humans also have one life; death leaves the match, and a host's death closes the session. On the multiplayer loss screen, Play Again opens host/join setup for the next match. The last player standing wins.
+Choose 1, 2, 3, or 5 **bot lives** from the main menu. Every combatant begins with 100 health. Human players have one life: your death opens a loss screen with **Play Again** and **Main Menu**. Play Again starts a fresh match on the same floor plan with the same bot-lives setting. Bots respawn while lives remain. The last player standing wins.
 
 Players and bots regenerate **2 health per second after 5 seconds without taking damage**, up to 100 health. Taking another hit restarts the delay. Healing stops on death or when the round ends; multiplayer healing is controlled by the host.
 
@@ -38,7 +38,7 @@ Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazo
 - **Round progress:** Numbered gold toilet markers turn green after your flushes. The HUD shows remaining enemy lives and elapsed time. Win/loss screens show kills, accuracy, time, and toilets flushed; fastest wins are saved separately for each map/difficulty/bot-lives combination. Accuracy counts trigger pulls that damage an opponent, so multiple shotgun pellets or a rocket multikill count as one successful shot.
 - **Apartment:** Added compact cover cabinets, silly signs and trophies, cartoon bot faces, and decor that wobbles near explosions. The floor-plan drawing remains the default. Uncheck **Floor-plan drawing on floor** in Settings for wood/tile finishes; the minimap still shows the plan.
 
-These combat and pause changes target single player; the existing multiplayer protocol and routes have not been redesigned.
+The pause menu, difficulty settings, and personal records apply to single player.
 
 ## Controls
 
@@ -65,7 +65,7 @@ All players must use the same native version of the game. One player hosts the m
 ### Host a match
 
 1. Open **Multiplayer** and enter your player name.
-2. Choose the total number of human players, from 2–8.
+2. Choose the total number of human players, from 2–8, and set **1, 2, 3, or 5 lives per player**.
 3. For an internet match, leave **Automatically open the UDP port** enabled.
 4. Select **Create Lobby**.
 5. Use **Copy LAN** for players on the same network, or **Copy Internet** for remote players, then send the copied `IP:port` address to them.
@@ -76,6 +76,10 @@ All players must use the same native version of the game. One player hosts the m
 1. Open **Multiplayer** and enter your player name.
 2. Paste the host's complete `IP:port` address into **Host IP**.
 3. Select **Join** and wait in the lobby for the host to start the match.
+
+### Play a rematch
+
+Players respawn at full health while they have lives left. Eliminated players stay connected until everyone sees the result. The host can select **Play Again** to start a fresh match on the same map with the same lives setting and everyone still connected. At least two players are needed. Select **Main Menu** on the results screen to leave.
 
 ### Connection notes
 

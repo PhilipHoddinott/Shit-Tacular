@@ -19,6 +19,7 @@ const WALL_THICKNESS := 0.13
 const DEFAULT_NETWORK_PORT := 7000
 const MIN_NETWORK_PLAYERS := 2
 const MAX_NETWORK_PLAYERS := 8
+const LIFE_OPTIONS := [1, 2, 3, 5]
 
 var rng := RandomNumberGenerator.new()
 var player: FpsPlayer
@@ -51,6 +52,7 @@ var menu_root: Control
 var multiplayer_menu_root: Control
 var player_name_edit: LineEdit
 var player_count_selector: OptionButton
+var network_lives_selector: OptionButton
 var host_port_edit: LineEdit
 var join_ip_edit: LineEdit
 var join_port_edit: LineEdit
@@ -69,12 +71,13 @@ var loss_root: Control
 var loss_replay_button: Button
 var loss_menu_button: Button
 var loss_note: Label
-var lost_multiplayer := false
 var selected_lives := 1
+var selected_network_lives := 1
 var selected_player_count := 4
 var network_port := DEFAULT_NETWORK_PORT
 var is_network_host := false
 var network_match_started := false
+var network_round_id := 0
 var network_state_time := 0.0
 var lobby_players: Dictionary = {}
 var network_players: Dictionary = {}
@@ -165,6 +168,8 @@ func _process(delta: float) -> void:
 		_update_singleplayer_lives()
 	if player and is_instance_valid(player):
 		ui_prompt.text = player.get_interaction_prompt()
+		if network_match_started and not player.is_alive and player.lives_remaining == 0:
+			ui_prompt.text = "OUT OF LIVES · WAITING FOR MATCH TO END"
 	if banner_time > 0.0:
 		banner_time -= delta
 		ui_banner.modulate.a = minf(1.0, banner_time * 1.8)
@@ -382,6 +387,8 @@ func _start_qa_network_host() -> void:
 	player_name_edit.text = "QA Host"
 	selected_player_count = 2
 	player_count_selector.select(0)
+	network_lives_selector.select(1)
+	network_lives_selector.item_selected.emit(1)
 	host_port_edit.text = "7019"
 	upnp_checkbox.button_pressed = false
 	_host_lobby()
@@ -398,18 +405,22 @@ func _finish_qa_network_test() -> void:
 	assert(network_match_started, "Network match must start on every peer")
 	assert(network_players.size() == 2, "Network match must contain two human players")
 	assert(player != null, "Each peer must own a local first-person player")
+	assert("2 LIVES PER PLAYER" in lobby_roster.text, "The lobby must display the selected lives on both peers")
+	assert(ui_lives.text == "LIVES  2", "The local HUD must start with the selected lives")
+	for combatant in combatants:
+		assert(combatant.lives_remaining == 2, "Every player must start with the selected lives")
 	minimap.refresh_map()
 	assert(minimap.visible_combatants().size() == 2, "Both network players must appear on each peer's minimap")
 	var starting_position := player.global_position
-	if multiplayer.is_server():
+	var host := multiplayer.is_server()
+	var client_id := multiplayer.get_peers()[0] if host else multiplayer.get_unique_id()
+	var client_player := network_players[client_id] as NetworkFpsPlayer
+	if host:
 		await get_tree().create_timer(0.4).timeout
-		for id in network_players:
-			if int(id) != 1:
-				var client_player := network_players[id] as NetworkFpsPlayer
-				client_player.register_toilet_flush(1)
-				client_player.register_toilet_flush(2)
-				client_player.register_toilet_flush(3)
-				client_player.apply_damage(24, player)
+		client_player.register_toilet_flush(1)
+		client_player.register_toilet_flush(2)
+		client_player.register_toilet_flush(3)
+		client_player.apply_damage(24, player)
 		await get_tree().create_timer(0.5).timeout
 	else:
 		Input.action_press("move_right")
@@ -421,22 +432,61 @@ func _finish_qa_network_test() -> void:
 		assert(player.current_weapon == FpsPlayer.WEAPON_RAINBOW_RIFLE and player.damage == 40 and player.flushed_toilets.size() == 3, "The toilet weapon reward must synchronize to the client")
 	# Verify that host healing reaches the client through normal snapshots.
 	await get_tree().create_timer(6.0).timeout
-	if not multiplayer.is_server():
+	if not host:
 		assert(player.health >= 78 and player.health <= 80, "Host regeneration must synchronize to the client")
 		print("QA_NETWORK_REGEN_OK health=%d" % player.health)
 	print("QA_NETWORK_OK peer=%d players=%d host=%s" % [multiplayer.get_unique_id(), network_players.size(), multiplayer.is_server()])
-	if multiplayer.is_server():
+	if host:
 		await get_tree().create_timer(0.15).timeout
-		for id in network_players:
-			if int(id) != 1:
-				network_players[id].apply_damage(999, player)
+		client_player.apply_damage(999, player)
+		assert(not client_player.is_alive and client_player.lives_remaining == 1 and not round_over, "The host must spend one life and keep the match running")
+		await get_tree().create_timer(1.5).timeout
+		assert(client_player.is_alive and client_player.health == 100, "The host must respawn the client at full health")
+		client_player.apply_damage(999, player)
 	else:
-		await get_tree().create_timer(0.4).timeout
-		assert(loss_root.visible and player == null and not network_match_started, "A defeated client must leave the match and see the loss screen")
+		while player.is_alive and not round_over:
+			await get_tree().process_frame
+		assert(network_match_started and not round_over and player.lives_remaining == 1 and not player.input_enabled, "The first death must synchronize without disconnecting the client")
+		while not player.is_alive and not round_over:
+			await get_tree().process_frame
+		assert(player.is_alive and player.input_enabled and player.health == 100 and is_zero_approx(player.neck.rotation.z), "The client must regain its controls and upright view on respawn")
+		assert(player.current_weapon == FpsPlayer.WEAPON_RAINBOW_RIFLE, "Respawning during a match must preserve the player's weapons")
+	while not round_over:
+		await get_tree().process_frame
+	assert(network_match_started and lobby_players.size() == 2 and loss_root.visible, "Both peers must see results and stay in the lobby")
+	assert(result_title.text == ("YOU WIN!" if host else "YOU LOST"), "Host victory must reach both results screens")
+	assert(loss_replay_button.visible == host, "Only the host may start a rematch")
+	assert(not player.input_enabled, "Results must disable gameplay controls")
+	print("QA_NETWORK_HOST_WIN_OK")
+	if host:
+		await get_tree().create_timer(0.35).timeout
 		loss_replay_button.pressed.emit()
-		assert(multiplayer_menu_root.visible and not loss_root.visible, "Multiplayer replay must open host/join setup")
-		print("QA_NETWORK_LOSS_SCREEN_OK")
-	await get_tree().create_timer(0.5).timeout
+	else:
+		while round_over:
+			await get_tree().process_frame
+	assert(network_round_id == 2 and network_players.size() == 2 and multiplayer.get_peers().size() == 1, "Rematch must reuse the same connection and players")
+	assert(not loss_root.visible and hud_root.visible and player.input_enabled, "Rematch must return to active play")
+	for combatant in combatants:
+		assert(combatant.is_alive and combatant.health == 100 and combatant.lives_remaining == 2, "Rematch must restore health and configured lives")
+		assert(combatant.flushed_toilets.is_empty() and combatant.current_weapon == FpsPlayer.WEAPON_PISTOL, "Rematch must reset toilet and weapon progress")
+	if host:
+		await get_tree().create_timer(0.3).timeout
+		player.apply_damage(999, network_players[client_id])
+		await get_tree().create_timer(1.3).timeout
+		assert(player.is_alive and player.health == 100 and player.lives_remaining == 1, "The host must also respawn")
+		player.apply_damage(999, network_players[client_id])
+	while not round_over:
+		await get_tree().process_frame
+	assert(network_match_started and loss_root.visible and result_title.text == ("YOU LOST" if host else "YOU WIN!"), "Host elimination must end the match without closing the lobby")
+	print("QA_NETWORK_REMATCH_OK")
+	if host:
+		while lobby_players.size() == 2:
+			await get_tree().process_frame
+		assert(loss_replay_button.disabled, "A lobby with only the host cannot rematch")
+	else:
+		await get_tree().create_timer(0.25).timeout
+	loss_menu_button.pressed.emit()
+	assert(menu_root.visible and not loss_root.visible and not network_match_started, "Main Menu must leave the match cleanly")
 	get_tree().quit()
 
 
@@ -1152,7 +1202,6 @@ func _start_round() -> void:
 	menu_root.visible = false
 	multiplayer_menu_root.visible = false
 	death_menu_pending = false
-	lost_multiplayer = false
 	_apply_floor_style()
 
 	spawn_positions = _network_spawn_positions()
@@ -1215,18 +1264,22 @@ func _on_combatant_died(combatant: Node) -> void:
 		"networked": network_match_started
 	})
 	if combatant == player:
-		ui_lives.text = "LIVES  %d" % combatant.lives_remaining
-		return
+		update_local_lives(combatant.lives_remaining)
+		if not network_match_started:
+			return
 
 	var contenders := _get_remaining_contenders()
 	if contenders.size() <= 1:
-		await get_tree().create_timer(0.15, network_match_started).timeout
+		if network_match_started:
+			_check_network_round_finished.call_deferred(death_round)
+			return
+		await get_tree().create_timer(0.15, false).timeout
 		if death_round == round_serial:
 			_finish_round(contenders)
 		return
 
 	if combatant.lives_remaining > 0:
-		if combatant == player:
+		if combatant == player and not network_match_started:
 			_show_banner("OOPS!\nRESPAWNING...", 1.1)
 		await get_tree().create_timer(1.1, network_match_started).timeout
 		if death_round == round_serial and not round_over and is_instance_valid(combatant):
@@ -1234,9 +1287,6 @@ func _on_combatant_died(combatant: Node) -> void:
 			Diagnostics.log_event("combatant_respawned", {"name": combatant.combatant_name(), "lives_remaining": combatant.lives_remaining, "networked": network_match_started})
 			if combatant == player:
 				ui_lives.text = "LIVES  %d" % combatant.lives_remaining
-	else:
-		if combatant == player:
-			_show_banner("OUT OF LIVES!", 1.5)
 
 
 func _get_remaining_contenders() -> Array[Node]:
@@ -1288,6 +1338,10 @@ func _choose_respawn_position(respawning: Node3D) -> Vector3:
 func _finish_round(contenders: Array[Node]) -> void:
 	if round_over or menu_root.visible:
 		return
+	if network_match_started:
+		var winner_id: int = contenders[0].peer_id if contenders.size() == 1 else 0
+		_network_round_finished.rpc(winner_id)
+		return
 	round_over = true
 	var winner := "Nobody"
 	if contenders.size() == 1:
@@ -1295,47 +1349,65 @@ func _finish_round(contenders: Array[Node]) -> void:
 	Diagnostics.log_event("round_finished", {"winner": winner, "networked": network_match_started})
 	ui_status.text = "%s WINS!" % winner.to_upper()
 	ui_status.visible = true
-	replay_button.visible = not network_match_started or is_network_host
+	replay_button.visible = true
 	_show_banner("ROUND OVER", 3.5)
 	if player:
 		player.input_enabled = false
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	if network_match_started and multiplayer.is_server():
-		_network_round_finished.rpc(winner)
-	elif not network_match_started:
-		_show_singleplayer_results(contenders.size() == 1 and contenders[0] == player)
+	_show_singleplayer_results(contenders.size() == 1 and contenders[0] == player)
 
 
-@rpc("authority", "call_remote", "reliable")
-func _network_round_finished(winner: String) -> void:
+func _check_network_round_finished(death_round: int) -> void:
+	if death_round != round_serial or not network_match_started or round_over:
+		return
+	var contenders := _get_remaining_contenders()
+	if contenders.size() <= 1:
+		_finish_round(contenders)
+
+
+@rpc("authority", "call_local", "reliable")
+func _network_round_finished(winner_id: int) -> void:
 	round_over = true
-	ui_status.text = "%s WINS!" % winner.to_upper()
-	ui_status.visible = true
-	replay_button.visible = false
-	_show_banner("ROUND OVER", 3.5)
+	var winner := str(lobby_players.get(winner_id, "Nobody"))
+	var won := winner_id == multiplayer.get_unique_id()
+	Diagnostics.log_event("round_finished", {"winner": winner, "networked": true})
 	if player:
 		player.input_enabled = false
+	hud_root.visible = false
+	result_title.text = "YOU WIN!" if won else ("DRAW" if winner_id == 0 else "YOU LOST")
+	result_title.add_theme_color_override("font_color", Color("ffe879") if won else Color("ff789a"))
+	loss_note.text = "No players survived." if winner_id == 0 else "%s wins the match." % winner
+	if not is_network_host:
+		loss_note.text += "\nWaiting for the host to start a rematch."
+	loss_replay_button.visible = is_network_host
+	_update_network_rematch_button()
+	loss_root.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if loss_replay_button.visible and not loss_replay_button.disabled:
+		loss_replay_button.grab_focus()
+	else:
+		loss_menu_button.grab_focus()
+
+
+func _update_network_rematch_button() -> void:
+	var can_rematch := lobby_players.size() >= MIN_NETWORK_PLAYERS
+	loss_replay_button.disabled = not can_rematch
+	loss_replay_button.text = "PLAY AGAIN" if can_rematch else "NEED AT LEAST 2 PLAYERS"
 
 
 func _on_player_health_changed(current: int, _maximum: int) -> void:
 	ui_health.text = "HEALTH  %d" % current
 	ui_health.modulate = Color("ff6565") if current <= 30 else Color.WHITE
-	if current <= 0 and not death_menu_pending:
+	if not network_match_started and current <= 0 and not death_menu_pending:
 		death_menu_pending = true
 		round_over = true
 		_return_to_menu_after_death.call_deferred()
 
 
 func _return_to_menu_after_death() -> void:
-	# Defer teardown until damage signals and network snapshot application finish.
-	lost_multiplayer = network_match_started
-	var result_text := ""
-	if not lost_multiplayer:
-		result_text = round_stats.finish(false, player.flushed_toilets.size() if is_instance_valid(player) else 0, not _is_qa_run())
-	_close_network_connection()
+	# Defer teardown until the damage signals finish.
+	var result_text := round_stats.finish(false, player.flushed_toilets.size() if is_instance_valid(player) else 0, not _is_qa_run())
 	_clear_combatants()
-	lobby_players.clear()
 	banner_time = 0.0
 	ui_banner.text = ""
 	ui_status.visible = false
@@ -1349,7 +1421,8 @@ func _return_to_menu_after_death() -> void:
 	result_title.text = "YOU LOST"
 	result_title.modulate = Color.WHITE
 	result_title.add_theme_color_override("font_color", Color("ff789a"))
-	loss_note.text = "Play Again opens multiplayer setup to host or join another match." if lost_multiplayer else result_text + "\n" + _round_rules_text()
+	loss_note.text = result_text + "\n" + _round_rules_text()
+	_reset_singleplayer_results_buttons()
 	loss_root.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	loss_replay_button.grab_focus()
@@ -1364,15 +1437,21 @@ func _is_qa_run() -> bool:
 
 func _show_singleplayer_results(won: bool) -> void:
 	_clear_round_effects()
-	lost_multiplayer = false
 	result_title.text = "YOU WIN!" if won else "YOU LOST"
 	result_title.add_theme_color_override("font_color", Color("ffe879") if won else Color("ff789a"))
 	loss_note.text = round_stats.finish(won, player.flushed_toilets.size() if is_instance_valid(player) else 0, not _is_qa_run())
 	loss_note.text += "\n" + _round_rules_text()
 	hud_root.visible = false
+	_reset_singleplayer_results_buttons()
 	loss_root.visible = true
 	loss_replay_button.grab_focus()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _reset_singleplayer_results_buttons() -> void:
+	loss_replay_button.visible = true
+	loss_replay_button.disabled = false
+	loss_replay_button.text = "PLAY AGAIN"
 
 
 func _update_singleplayer_lives() -> void:
@@ -1399,11 +1478,17 @@ func record_projectile_hit(shooter: Node, shot_id: int) -> void:
 
 
 func _play_again_after_loss() -> void:
-	loss_root.visible = false
-	if lost_multiplayer:
-		_show_multiplayer_menu()
+	if network_match_started:
+		_start_network_match()
 	else:
 		_start_round()
+
+
+func _leave_results() -> void:
+	if network_match_started:
+		_leave_multiplayer_menu()
+	else:
+		_show_main_menu()
 
 
 func _on_toilet_progress(current: int, total: int) -> void:
@@ -1481,13 +1566,7 @@ func _create_ui() -> void:
 	replay_button.position = Vector2(500, 390)
 	replay_button.size = Vector2(280, 64)
 	replay_button.visible = false
-	replay_button.pressed.connect(func():
-		if network_match_started:
-			if is_network_host:
-				_start_network_match()
-		else:
-			_start_round()
-	)
+	replay_button.pressed.connect(_start_round)
 	hud_root.add_child(replay_button)
 
 	var crosshair := Label.new()
@@ -1553,7 +1632,7 @@ func _create_loss_screen(canvas: CanvasLayer) -> void:
 	loss_replay_button.pressed.connect(_play_again_after_loss)
 	content.add_child(loss_replay_button)
 	loss_menu_button = _menu_button("MAIN MENU")
-	loss_menu_button.pressed.connect(_show_main_menu)
+	loss_menu_button.pressed.connect(_leave_results)
 	content.add_child(loss_menu_button)
 
 
@@ -1764,6 +1843,13 @@ func _create_multiplayer_menu(canvas: CanvasLayer) -> void:
 	player_count_selector.select(selected_player_count - MIN_NETWORK_PLAYERS)
 	player_count_selector.item_selected.connect(_on_player_count_selected)
 	host_row.add_child(player_count_selector)
+	network_lives_selector = OptionButton.new()
+	network_lives_selector.custom_minimum_size = Vector2(105, 46)
+	network_lives_selector.tooltip_text = "Lives per player"
+	for life_count in LIFE_OPTIONS:
+		network_lives_selector.add_item("%d %s" % [life_count, "LIFE" if life_count == 1 else "LIVES"], life_count)
+	network_lives_selector.item_selected.connect(_on_network_lives_selected)
+	host_row.add_child(network_lives_selector)
 	host_port_edit = _network_line_edit(str(DEFAULT_NETWORK_PORT), "UDP PORT", 130)
 	host_port_edit.max_length = 5
 	host_row.add_child(host_port_edit)
@@ -1812,6 +1898,7 @@ func _create_multiplayer_menu(canvas: CanvasLayer) -> void:
 	lobby_roster.text = ""
 	lobby_roster.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lobby_roster.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lobby_roster.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lobby_roster.custom_minimum_size.y = 100
 	lobby_roster.add_theme_font_size_override("font_size", 17)
 	lobby_roster.add_theme_color_override("font_color", Color("f7d7f3"))
@@ -1953,13 +2040,19 @@ func _on_player_count_selected(index: int) -> void:
 	selected_player_count = int(player_count_selector.get_item_metadata(index))
 
 
+func _on_network_lives_selected(index: int) -> void:
+	selected_network_lives = network_lives_selector.get_item_id(index)
+	if is_network_host and not network_match_started:
+		_broadcast_lobby_state()
+
+
 func _host_lobby() -> void:
 	_close_network_connection()
 	network_port = _validated_port(host_port_edit.text)
 	host_port_edit.text = str(network_port)
 	Diagnostics.log_event("host_lobby_requested", {
 		"players": selected_player_count,
-		"lives": selected_lives,
+		"lives": selected_network_lives,
 		"port": network_port,
 		"upnp": upnp_checkbox.button_pressed
 	})
@@ -1972,6 +2065,7 @@ func _host_lobby() -> void:
 	multiplayer.multiplayer_peer = peer
 	is_network_host = true
 	network_match_started = false
+	player_count_selector.disabled = true
 	lobby_players = {1: _clean_player_name(player_name_edit.text, 1)}
 	copy_address_button.visible = true
 	copy_public_address_button.visible = false
@@ -2033,6 +2127,8 @@ func _on_server_disconnected() -> void:
 	network_match_started = false
 	round_over = false
 	_clear_combatants()
+	lobby_players.clear()
+	loss_root.visible = false
 	_show_multiplayer_menu()
 	network_status.text = "The host disconnected."
 	lobby_roster.text = ""
@@ -2071,65 +2167,69 @@ func _register_lobby_player(requested_name: String) -> void:
 func _broadcast_lobby_state() -> void:
 	if not multiplayer.is_server():
 		return
-	_receive_lobby_state.rpc(lobby_players, selected_player_count, selected_lives, network_port, _get_lan_address())
+	_receive_lobby_state.rpc(lobby_players, selected_player_count, selected_network_lives, network_port, _get_lan_address())
 
 
 @rpc("authority", "call_local", "reliable")
 func _receive_lobby_state(players: Dictionary, player_limit: int, lives: int, port: int, lan_address: String) -> void:
 	lobby_players = players.duplicate()
-	selected_player_count = player_limit
-	selected_lives = lives
 	network_port = port
 	var ids := lobby_players.keys()
 	ids.sort()
 	var names: Array[String] = []
 	for id in ids:
 		names.append(str(lobby_players[id]))
-	lobby_roster.text = "LOBBY  %d / %d\n%s" % [lobby_players.size(), selected_player_count, "  •  ".join(names)]
+	lobby_roster.text = "LOBBY  %d / %d  ·  %d %s PER PLAYER\n%s" % [
+		lobby_players.size(), player_limit, lives, "LIFE" if lives == 1 else "LIVES", "  •  ".join(names)
+	]
 	if is_network_host:
 		_refresh_host_network_status(lan_address)
 		host_start_button.disabled = lobby_players.size() != selected_player_count
 		if "--qa-network-host" in OS.get_cmdline_user_args() and lobby_players.size() == selected_player_count:
 			_start_network_match.call_deferred()
 	else:
-		network_status.text = "Connected. Waiting for the host to start.  •  1 life per player"
+		network_status.text = "Connected. Waiting for the host to start."
 
 
 func _start_network_match() -> void:
-	if not is_network_host or not multiplayer.is_server():
+	if not is_network_host or not multiplayer.is_server() or (network_match_started and not round_over):
 		return
-	if lobby_players.size() != selected_player_count:
+	if not network_match_started and lobby_players.size() != selected_player_count:
 		network_status.text = "Waiting for %d more player(s)." % (selected_player_count - lobby_players.size())
+		return
+	if lobby_players.size() < MIN_NETWORK_PLAYERS:
 		return
 	var peer_ids := lobby_players.keys()
 	peer_ids.sort()
-	Diagnostics.log_event("network_match_starting", {"players": peer_ids.size(), "lives": selected_lives})
+	Diagnostics.log_event("network_match_starting", {"players": peer_ids.size(), "lives": selected_network_lives})
 	var available_spawns := _network_spawn_positions()
 	available_spawns.shuffle()
 	var chosen_spawns: Array[Vector3] = []
 	for index in peer_ids.size():
 		chosen_spawns.append(available_spawns[index])
-	_begin_network_match.rpc(peer_ids, lobby_players, selected_lives, chosen_spawns, selected_floor_plan)
+	multiplayer.multiplayer_peer.refuse_new_connections = true
+	_begin_network_match.rpc(network_round_id + 1, peer_ids, lobby_players, selected_network_lives, chosen_spawns, selected_floor_plan)
 
 
 @rpc("authority", "call_local", "reliable")
-func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array, map_name: String) -> void:
+func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array, map_name: String) -> void:
 	if pause_menu:
 		pause_menu.close_for_transition()
 	round_stats.active = false
-	_clear_round_effects()
 	_clear_combatants()
+	SoundEffects.stop_all()
 	if selected_floor_plan != map_name:
 		_load_floor_plan(map_name)
 	network_match_started = true
+	network_round_id = match_id
 	round_over = false
-	selected_lives = lives
+	lobby_players = player_names.duplicate()
+	_apply_floor_style()
 	Diagnostics.log_event("network_match_started", {"local_peer_id": multiplayer.get_unique_id(), "players": peer_ids.size(), "lives": lives, "host": multiplayer.is_server()})
 	network_state_time = 0.0
 	ui_status.visible = false
 	replay_button.visible = false
-	replay_button.text = "PLAY AGAIN" if is_network_host else "WAITING FOR HOST"
-	replay_button.disabled = not is_network_host
+	loss_root.visible = false
 	hud_root.visible = true
 	menu_root.visible = false
 	multiplayer_menu_root.visible = false
@@ -2140,7 +2240,7 @@ func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int,
 		var network_player := NetworkPlayerScript.new() as NetworkFpsPlayer
 		network_player.setup_network(id, str(player_names[id]), self, chosen_spawns[index])
 		network_player.game = self
-		network_player.lives_remaining = 1
+		network_player.lives_remaining = lives
 		add_child(network_player)
 		combatants.append(network_player)
 		network_players[id] = network_player
@@ -2155,11 +2255,14 @@ func _begin_network_match(peer_ids: Array, player_names: Dictionary, lives: int,
 		player.toilet_progress.connect(_on_toilet_progress)
 		player.powerup_activated.connect(_on_powerup_activated)
 	ui_health.text = "HEALTH  100"
+	ui_health.modulate = Color.WHITE
+	combat_feedback.hit_time = 0.0
+	combat_feedback.damage_time = 0.0
 	ui_toilets.text = "TOILETS  0 / 3    PISTOL  24"
 	ui_toilets.modulate = Color.WHITE
-	ui_lives.text = "LIFE  1"
+	ui_lives.text = "LIVES  %d" % lives
 	_show_banner("LAST ONE STANDING", 2.4)
-	if "--qa-network-host" in OS.get_cmdline_user_args() or "--qa-network-client" in OS.get_cmdline_user_args():
+	if match_id == 1 and ("--qa-network-host" in OS.get_cmdline_user_args() or "--qa-network-client" in OS.get_cmdline_user_args()):
 		_finish_qa_network_test.call_deferred()
 
 
@@ -2175,34 +2278,34 @@ func _network_spawn_positions() -> Array[Vector3]:
 
 
 func send_local_network_input(move_input: Vector2, sprinting: bool, firing: bool, yaw: float, pitch: float) -> void:
-	if network_match_started and not multiplayer.is_server():
-		_server_receive_input.rpc_id(1, move_input, sprinting, firing, yaw, pitch)
+	if network_match_started and not round_over and not multiplayer.is_server():
+		_server_receive_input.rpc_id(1, network_round_id, move_input, sprinting, firing, yaw, pitch)
 
 
 func send_local_network_action(action: String) -> void:
-	if network_match_started and not multiplayer.is_server():
-		_server_receive_action.rpc_id(1, action)
+	if network_match_started and not round_over and not multiplayer.is_server():
+		_server_receive_action.rpc_id(1, network_round_id, action)
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered", 1)
-func _server_receive_input(move_input: Vector2, sprinting: bool, firing: bool, yaw: float, pitch: float) -> void:
-	if not multiplayer.is_server() or not network_match_started:
+func _server_receive_input(match_id: int, move_input: Vector2, sprinting: bool, firing: bool, yaw: float, pitch: float) -> void:
+	if not multiplayer.is_server() or not network_match_started or round_over or match_id != network_round_id:
 		return
 	var sender_id := multiplayer.get_remote_sender_id()
 	var sender_player := network_players.get(sender_id) as NetworkFpsPlayer
-	if sender_player:
+	if sender_player and sender_player.is_alive:
 		sender_player.set_server_input(move_input, sprinting, firing, yaw, pitch)
 
 
 @rpc("any_peer", "call_remote", "reliable", 2)
-func _server_receive_action(action: String) -> void:
-	if not multiplayer.is_server() or not network_match_started:
+func _server_receive_action(match_id: int, action: String) -> void:
+	if not multiplayer.is_server() or not network_match_started or round_over or match_id != network_round_id:
 		return
 	if action != "jump" and action != "interact":
 		return
 	var sender_id := multiplayer.get_remote_sender_id()
 	var sender_player := network_players.get(sender_id) as NetworkFpsPlayer
-	if sender_player:
+	if sender_player and sender_player.is_alive:
 		sender_player.queue_network_action(action)
 
 
@@ -2223,11 +2326,13 @@ func _broadcast_network_state() -> void:
 			"weapon": network_player.current_weapon,
 			"toilets": network_player.flushed_toilets.keys()
 		}
-	_receive_network_state.rpc(state)
+	_receive_network_state.rpc(network_round_id, state)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered", 1)
-func _receive_network_state(state: Dictionary) -> void:
+func _receive_network_state(match_id: int, state: Dictionary) -> void:
+	if not network_match_started or match_id != network_round_id:
+		return
 	for id in state:
 		var network_player := network_players.get(id) as NetworkFpsPlayer
 		if network_player:
@@ -2241,13 +2346,15 @@ func _remove_disconnected_network_player(disconnected_peer_id: int) -> void:
 		disconnected_player.queue_free()
 		network_players.erase(disconnected_peer_id)
 		_remove_network_player.rpc(disconnected_peer_id)
-	var contenders := _get_remaining_contenders()
-	if contenders.size() <= 1:
-		_finish_round(contenders)
+	if round_over:
+		_update_network_rematch_button()
+	else:
+		_check_network_round_finished.call_deferred(round_serial)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _remove_network_player(disconnected_peer_id: int) -> void:
+	lobby_players.erase(disconnected_peer_id)
 	var disconnected_player := network_players.get(disconnected_peer_id) as NetworkFpsPlayer
 	if disconnected_player:
 		combatants.erase(disconnected_player)
@@ -2260,6 +2367,7 @@ func _clear_combatants() -> void:
 	_clear_round_effects()
 	for old_combatant in combatants:
 		if is_instance_valid(old_combatant):
+			old_combatant.set_physics_process(false)
 			old_combatant.queue_free()
 	combatants.clear()
 	network_players.clear()
@@ -2273,6 +2381,8 @@ func _close_network_connection() -> void:
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	is_network_host = false
 	network_match_started = false
+	network_round_id = 0
+	player_count_selector.disabled = false
 
 
 func _copy_host_address() -> void:
@@ -2456,6 +2566,8 @@ func _clean_player_name(requested_name: String, id: int) -> String:
 
 func update_local_lives(lives: int) -> void:
 	ui_lives.text = "LIVES  %d" % lives
+	if network_match_started and not round_over and lives > 0:
+		_show_banner("RESPAWNING…", 1.1)
 
 
 func update_local_powerup(current_damage: int, weapon_name: String = "") -> void:

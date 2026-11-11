@@ -90,12 +90,14 @@ func _create_network_avatar() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if is_local_player:
+	if is_local_player and is_alive and not network_game.round_over:
 		super(event)
 
 
 func _physics_process(delta: float) -> void:
 	if multiplayer.is_server():
+		if network_game.round_over:
+			return
 		if is_local_player:
 			super(delta)
 		else:
@@ -192,6 +194,7 @@ func apply_network_state(state: Dictionary) -> void:
 	var next_health := int(state.get("health", health))
 	var next_lives := int(state.get("lives", lives_remaining))
 	var next_alive := bool(state.get("alive", is_alive))
+	var respawned := next_alive and (not is_alive or next_lives < lives_remaining)
 	var next_damage := int(state.get("damage", damage))
 	var next_weapon := str(state.get("weapon", current_weapon))
 	var toilet_ids: Array = state.get("toilets", [])
@@ -201,7 +204,7 @@ func apply_network_state(state: Dictionary) -> void:
 			health_changed.emit(health, MAX_HEALTH)
 	if next_lives != lives_remaining:
 		lives_remaining = next_lives
-		if is_local_player and network_game.has_method("update_local_lives"):
+		if is_local_player:
 			network_game.update_local_lives(lives_remaining)
 	if next_weapon != current_weapon:
 		equip_weapon(next_weapon)
@@ -213,18 +216,23 @@ func apply_network_state(state: Dictionary) -> void:
 			flushed_toilets[int(toilet_id)] = true
 		if is_local_player and network_game.has_method("update_local_toilets"):
 			network_game.update_local_toilets(flushed_toilets.size(), next_damage, next_weapon)
-	if next_alive != is_alive:
+	if next_alive != is_alive or respawned:
 		is_alive = next_alive
 		collision_layer = 2 if is_alive else 0
 		collision_mask = 1 if is_alive else 0
 		if is_local_player:
-			input_enabled = is_alive
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if is_alive else Input.MOUSE_MODE_VISIBLE
+			input_enabled = is_alive and not network_game.round_over
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if input_enabled else Input.MOUSE_MODE_VISIBLE
+		neck.rotation.z = 0.0 if is_alive else deg_to_rad(72.0)
 		avatar_root.rotation.z = 0.0 if is_alive else deg_to_rad(82.0)
+		if respawned:
+			global_position = target_position
+			rotation.y = target_yaw
+			neck.rotation.x = target_pitch
 
 
 func apply_damage(amount: int, _attacker: Node = null) -> void:
-	if not multiplayer.is_server() or not is_alive or amount <= 0:
+	if not multiplayer.is_server() or network_game.round_over or not is_alive or amount <= 0:
 		return
 	regeneration.reset()
 	health = maxi(health - amount, 0)
@@ -258,6 +266,11 @@ func respawn_at(spawn_position: Vector3, yaw: float) -> void:
 	sitting_chair = null
 	health = MAX_HEALTH
 	regeneration.reset()
+	server_move_input = Vector2.ZERO
+	server_sprinting = false
+	server_firing = false
+	server_input_age = 0.0
+	queued_jump = false
 	is_alive = true
 	input_enabled = is_local_player
 	collision_layer = 2
