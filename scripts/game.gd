@@ -443,6 +443,9 @@ func _finish_qa_network_test() -> void:
 	var client_id := multiplayer.get_peers()[0] if host else multiplayer.get_unique_id()
 	var client_player := network_players[client_id] as NetworkFpsPlayer
 	if host:
+		var child_count := get_child_count()
+		spawn_rocket(Vector3(100, 10, 100), Vector3.FORWARD, player)
+		assert(get_child_count() == child_count + 1, "A multiplayer bazooka shot must create its explosion")
 		await get_tree().create_timer(0.4).timeout
 		client_player.register_toilet_flush(1)
 		client_player.register_toilet_flush(2)
@@ -2974,7 +2977,9 @@ func spawn_rocket(origin: Vector3, direction: Vector3, attacker: Node, max_damag
 		SingleplayerCombat.spawn_rocket(self, origin, direction, attacker, max_damage)
 	elif multiplayer.is_server():
 		var end := origin + direction * FpsPlayer.FIRE_DISTANCE
-		var exclude: Array[RID] = [attacker.get_rid()] if attacker is CollisionObject3D else []
+		var exclude: Array[RID] = []
+		if attacker is CollisionObject3D:
+			exclude.append(attacker.get_rid())
 		var query := PhysicsRayQueryParameters3D.create(origin, end, 3, exclude)
 		var result := get_world_3d().direct_space_state.intersect_ray(query)
 		var impact_position: Vector3 = result.position if result else end
