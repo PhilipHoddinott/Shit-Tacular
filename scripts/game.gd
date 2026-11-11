@@ -10,6 +10,7 @@ const SecondFloor = preload("res://scripts/second_floor.gd")
 const SingleplayerCombat = preload("res://scripts/singleplayer_combat.gd")
 const ApartmentPolish = preload("res://scripts/apartment_polish.gd")
 const LivingRoomVisuals = preload("res://scripts/living_room_visuals.gd")
+const RoundStats = preload("res://scripts/round_stats.gd")
 
 const APARTMENT_SCALE := 2.0
 const PLAN_SCALE := 0.02 * APARTMENT_SCALE
@@ -20,6 +21,11 @@ const DEFAULT_NETWORK_PORT := 7000
 const MIN_NETWORK_PLAYERS := 2
 const MAX_NETWORK_PLAYERS := 8
 const LIFE_OPTIONS := [1, 2, 3, 5]
+const MAX_NETWORK_LIVES := 99
+const FLOOR_PLANS := ["basment", "2nd floor"]
+const BOT_COLORS := [Color("e05a4f"), Color("4f83dc"), Color("d4a83f")]
+const PLAYERS_WIN := -1
+const BOTS_WIN := -2
 
 var rng := RandomNumberGenerator.new()
 var player: FpsPlayer
@@ -38,12 +44,13 @@ var ui_banner: Label
 var ui_status: Label
 var replay_button: Button
 var lives_selector: OptionButton
+var player_lives_selector: OptionButton
 var floor_selector: OptionButton
 var difficulty_selector: OptionButton
 var selected_difficulty := "normal"
 var pause_menu: Control
 var result_title: Label
-var round_stats := preload("res://scripts/round_stats.gd").new()
+var round_stats := RoundStats.new()
 var qa_runner: RefCounted
 var selected_floor_plan := "basment"
 var map_nodes: Array[Node] = []
@@ -52,7 +59,9 @@ var menu_root: Control
 var multiplayer_menu_root: Control
 var player_name_edit: LineEdit
 var player_count_selector: OptionButton
-var network_lives_selector: OptionButton
+var network_map_options: Array[OptionButton] = []
+var network_mode_options: Array[OptionButton] = []
+var network_lives_inputs: Array[SpinBox] = []
 var host_port_edit: LineEdit
 var join_ip_edit: LineEdit
 var join_port_edit: LineEdit
@@ -71,16 +80,28 @@ var loss_root: Control
 var loss_replay_button: Button
 var loss_menu_button: Button
 var loss_note: Label
+var results_panel: PanelContainer
+var results_content: VBoxContainer
+var results_network_rules: HBoxContainer
+var results_stats_grid: GridContainer
 var selected_lives := 1
+var selected_player_lives := 1
 var selected_network_lives := 1
+var selected_network_map := "basment"
+var selected_network_coop := false
 var selected_player_count := 4
 var network_port := DEFAULT_NETWORK_PORT
 var is_network_host := false
 var network_match_started := false
+var network_coop := false
+var bot_lobby_active := false
 var network_round_id := 0
 var network_state_time := 0.0
 var lobby_players: Dictionary = {}
 var network_players: Dictionary = {}
+var network_bots: Array[ApartmentBot] = []
+var network_match_names: Dictionary = {}
+var network_player_stats: Dictionary = {}
 var upnp_thread: Thread
 var active_upnp: UPNP
 var upnp_mapping_active := false
@@ -110,6 +131,7 @@ func _ready() -> void:
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	_setup_materials()
 	_load_floor_plan("2nd floor" if "--second-floor" in OS.get_cmdline_user_args() else "basment")
+	selected_network_map = selected_floor_plan
 	_create_ui()
 	Settings.changed.connect(_apply_floor_style)
 	Diagnostics.log_event("game_scene_ready", {"qa_mode": not OS.get_cmdline_user_args().is_empty()})
@@ -170,13 +192,18 @@ func _process(delta: float) -> void:
 		ui_prompt.text = player.get_interaction_prompt()
 		if network_match_started and not player.is_alive and player.lives_remaining == 0:
 			ui_prompt.text = "OUT OF LIVES · WAITING FOR MATCH TO END"
+		if network_coop and not round_over:
+			var bot_lives := 0
+			for bot in network_bots:
+				bot_lives += bot.lives_remaining
+			ui_lives.text = "LIVES  %d    BOT LIVES  %d" % [player.lives_remaining, bot_lives]
 	if banner_time > 0.0:
 		banner_time -= delta
 		ui_banner.modulate.a = minf(1.0, banner_time * 1.8)
 	else:
 		ui_banner.text = ""
 	if round_over and Input.is_action_just_pressed("restart"):
-		if network_match_started and is_network_host:
+		if is_network_host:
 			_start_network_match()
 		elif not network_match_started:
 			_start_round()
@@ -384,11 +411,11 @@ func _capture_host_lobby_qa_frame() -> void:
 
 
 func _start_qa_network_host() -> void:
+	_show_multiplayer_menu()
 	player_name_edit.text = "QA Host"
-	selected_player_count = 2
-	player_count_selector.select(0)
-	network_lives_selector.select(1)
-	network_lives_selector.item_selected.emit(1)
+	selected_player_count = 4
+	player_count_selector.select(2)
+	network_lives_inputs[0].value = 2
 	host_port_edit.text = "7019"
 	upnp_checkbox.button_pressed = false
 	_host_lobby()
@@ -420,7 +447,10 @@ func _finish_qa_network_test() -> void:
 		client_player.register_toilet_flush(1)
 		client_player.register_toilet_flush(2)
 		client_player.register_toilet_flush(3)
-		client_player.apply_damage(24, player)
+		player.active_shot_id = record_player_shot(player)
+		client_player.apply_damage(12, player)
+		client_player.apply_damage(12, player)
+		player.active_shot_id = -1
 		await get_tree().create_timer(0.5).timeout
 	else:
 		Input.action_press("move_right")
@@ -437,56 +467,82 @@ func _finish_qa_network_test() -> void:
 		print("QA_NETWORK_REGEN_OK health=%d" % player.health)
 	print("QA_NETWORK_OK peer=%d players=%d host=%s" % [multiplayer.get_unique_id(), network_players.size(), multiplayer.is_server()])
 	if host:
-		await get_tree().create_timer(0.15).timeout
+		client_player.global_position = Vector3(100, 30, 100)
+		player.global_position = Vector3(100, 30, 98.8)
+		client_player.velocity = Vector3.ZERO
+		player.velocity = Vector3.ZERO
+		client_player.register_toilet_flush(1)
+		client_player.register_toilet_flush(1)
+		while player.health == 100:
+			await get_tree().process_frame
+		assert(player.health == 50, "The server must resolve the client's close-range knife hit")
 		client_player.apply_damage(999, player)
 		assert(not client_player.is_alive and client_player.lives_remaining == 1 and not round_over, "The host must spend one life and keep the match running")
 		await get_tree().create_timer(1.5).timeout
 		assert(client_player.is_alive and client_player.health == 100, "The host must respawn the client at full health")
 		client_player.apply_damage(999, player)
 	else:
+		while player.current_weapon == FpsPlayer.WEAPON_RAINBOW_RIFLE:
+			await get_tree().process_frame
+		assert(player.flushed_toilets.size() == 3 and ui_toilets.modulate == Color.WHITE, "Reroll must synchronize the weapon and HUD with unchanged toilet progress")
+		send_local_network_action("knife")
 		while player.is_alive and not round_over:
 			await get_tree().process_frame
 		assert(network_match_started and not round_over and player.lives_remaining == 1 and not player.input_enabled, "The first death must synchronize without disconnecting the client")
 		while not player.is_alive and not round_over:
 			await get_tree().process_frame
 		assert(player.is_alive and player.input_enabled and player.health == 100 and is_zero_approx(player.neck.rotation.z), "The client must regain its controls and upright view on respawn")
-		assert(player.current_weapon == FpsPlayer.WEAPON_RAINBOW_RIFLE, "Respawning during a match must preserve the player's weapons")
+		assert(player.current_weapon != FpsPlayer.WEAPON_RAINBOW_RIFLE, "Respawning during a match must preserve the rerolled weapon")
 	while not round_over:
 		await get_tree().process_frame
 	assert(network_match_started and lobby_players.size() == 2 and loss_root.visible, "Both peers must see results and stay in the lobby")
 	assert(result_title.text == ("YOU WIN!" if host else "YOU LOST"), "Host victory must reach both results screens")
 	assert(loss_replay_button.visible == host, "Only the host may start a rematch")
 	assert(not player.input_enabled, "Results must disable gameplay controls")
+	assert(results_stats_grid.visible and results_stats_grid.get_child_count() == 21, "Both peers must show stats for both players")
+	assert(results_stats_grid.get_child(8).text == "2" and results_stats_grid.get_child(11).text == "1" and results_stats_grid.get_child(12).text == "100%", "A shot with two hits must count once toward accuracy")
+	assert(results_stats_grid.get_child(16).text == "2" and results_stats_grid.get_child(17).text == "50" and results_stats_grid.get_child(18).text == "0" and results_stats_grid.get_child(20).text == "5", "Stats must include deaths, knife damage, and repeated toilet flushes")
 	print("QA_NETWORK_HOST_WIN_OK")
 	if host:
 		await get_tree().create_timer(0.35).timeout
+		network_map_options.back().select(1)
+		network_map_options.back().item_selected.emit(1)
+		network_lives_inputs.back().get_line_edit().text = "7"
 		loss_replay_button.pressed.emit()
 	else:
 		while round_over:
 			await get_tree().process_frame
 	assert(network_round_id == 2 and network_players.size() == 2 and multiplayer.get_peers().size() == 1, "Rematch must reuse the same connection and players")
 	assert(not loss_root.visible and hud_root.visible and player.input_enabled, "Rematch must return to active play")
+	assert(selected_floor_plan == "2nd floor", "Rematch must apply the host's new map on every peer")
 	for combatant in combatants:
-		assert(combatant.is_alive and combatant.health == 100 and combatant.lives_remaining == 2, "Rematch must restore health and configured lives")
+		assert(combatant.is_alive and combatant.health == 100 and combatant.lives_remaining == 7, "Rematch must apply the host's new lives above five")
 		assert(combatant.flushed_toilets.is_empty() and combatant.current_weapon == FpsPlayer.WEAPON_PISTOL, "Rematch must reset toilet and weapon progress")
 	if host:
 		await get_tree().create_timer(0.3).timeout
-		player.apply_damage(999, network_players[client_id])
-		await get_tree().create_timer(1.3).timeout
-		assert(player.is_alive and player.health == 100 and player.lives_remaining == 1, "The host must also respawn")
+		for remaining in range(6, 0, -1):
+			player.apply_damage(999, network_players[client_id])
+			await get_tree().create_timer(1.2).timeout
+			assert(player.is_alive and player.health == 100 and player.lives_remaining == remaining, "The host must also respawn until the last life")
 		player.apply_damage(999, network_players[client_id])
 	while not round_over:
 		await get_tree().process_frame
 	assert(network_match_started and loss_root.visible and result_title.text == ("YOU LOST" if host else "YOU WIN!"), "Host elimination must end the match without closing the lobby")
+	assert(results_stats_grid.get_child(8).text == "0" and results_stats_grid.get_child(15).text == "7" and results_stats_grid.get_child(20).text == "0", "A rematch must start with fresh stats")
 	print("QA_NETWORK_REMATCH_OK")
 	if host:
 		while lobby_players.size() == 2:
 			await get_tree().process_frame
-		assert(loss_replay_button.disabled, "A lobby with only the host cannot rematch")
+		assert(not loss_replay_button.disabled and loss_replay_button.text == "PLAY WITH BOTS", "The host must be able to continue alone")
+		loss_replay_button.pressed.emit()
+		assert(bot_lobby_active and combatants.size() == 4 and not network_match_started, "Starting alone must spawn the host and three bots")
+		assert(player.lives_remaining == 7 and combatants[1].lives_remaining == 7 and selected_floor_plan == "2nd floor", "A bot lobby must use the host's settings")
+		_show_main_menu()
 	else:
 		await get_tree().create_timer(0.25).timeout
-	loss_menu_button.pressed.emit()
+		loss_menu_button.pressed.emit()
 	assert(menu_root.visible and not loss_root.visible and not network_match_started, "Main Menu must leave the match cleanly")
+	print("QA_NETWORK_STATS_AND_BOTS_OK")
 	get_tree().quit()
 
 
@@ -523,7 +579,7 @@ func _run_qa_smoke() -> void:
 	assert(lives_selector.get_item_metadata(0) == 1 and lives_selector.get_item_metadata(3) == 5, "Lives choices must range from one to five")
 	assert(upnp_checkbox.button_pressed, "Automatic UDP port mapping must be enabled by default")
 	assert(_upnp_error_message(UPNP.UPNP_RESULT_NO_GATEWAY) == "no compatible router was found", "UPnP failures must have a useful fallback message")
-	assert(player.lives_remaining == 1, "Humans have one life; the selector controls bots")
+	assert(player.lives_remaining == 1, "Player lives default to one")
 	assert(get_tree().get_nodes_in_group("sittable_chairs").size() == 4, "All four dining chairs must be sittable")
 	var test_chair := get_tree().get_first_node_in_group("sittable_chairs") as SittableChair
 	assert(test_chair != null, "At least one chair must be sittable")
@@ -593,6 +649,26 @@ func _run_qa_smoke() -> void:
 	assert(not round_over and not replay_button.visible and combatants.size() == 4, "Replay button must start a fresh round")
 	for combatant in combatants:
 		assert(combatant.lives_remaining == (1 if combatant == player else 2), "Replay must preserve bot lives and give the human one life")
+	assert(player_lives_selector.item_count == 4 and player_lives_selector.get_item_metadata(3) == 5, "Player lives must offer 1, 2, 3, and 5")
+	player_lives_selector.select(1)
+	player_lives_selector.item_selected.emit(1)
+	assert(selected_player_lives == 2 and selected_lives == 2, "Player and bot selectors must be independent")
+	_start_round()
+	for combatant in combatants:
+		combatant.set_physics_process(false)
+	assert(player.lives_remaining == 2, "Player must spawn with selected lives")
+	player.apply_damage(999)
+	assert(not player.is_alive and player.lives_remaining == 1 and not round_over, "An extra life must prevent immediate game over")
+	await get_tree().create_timer(1.2).timeout
+	assert(player.is_alive and player.health == 100 and not loss_root.visible, "Player must respawn at full health")
+	_update_singleplayer_lives()
+	assert("YOU  1 LIFE" in ui_lives.text, "HUD must show remaining player lives")
+	player.apply_damage(999)
+	await get_tree().process_frame
+	assert(loss_root.visible and player == null, "Only the final player death should show the loss screen")
+	loss_replay_button.pressed.emit()
+	assert(player.lives_remaining == 2 and combatants[1].lives_remaining == 2, "Replay must preserve both life settings")
+	print("QA_PLAYER_LIVES_OK selectors=independent respawn=working final_death=loss replay=preserved")
 	print("QA_SMOKE_OK apartment_scale=2 weapons=4 rainbow_rifle_damage=40 toilets=3 chairs=sittable lives=respawn replay=visible")
 	get_tree().quit()
 
@@ -735,7 +811,7 @@ func _test_floor_plans() -> void:
 		var query := PhysicsShapeQueryParameters3D.new()
 		query.shape = capsule
 		query.collision_mask = 1
-		var positions := _network_spawn_positions()
+		var positions := _coop_spawn_positions(map_name)
 		if map_name == "2nd floor":
 			positions.append_array(SecondFloor.doorways())
 		for position in positions:
@@ -1185,11 +1261,13 @@ func _start_round() -> void:
 		pause_menu.close_for_transition()
 	_clear_round_effects()
 	SoundEffects.stop_all()
-	round_stats.start(selected_floor_plan, selected_difficulty, selected_lives)
+	var human_lives := selected_network_lives if bot_lobby_active else selected_player_lives
+	var bot_lives := selected_network_lives if bot_lobby_active else selected_lives
+	round_stats.start(selected_floor_plan, selected_difficulty, bot_lives, human_lives)
 	if loss_root:
 		loss_root.visible = false
 	round_serial += 1
-	Diagnostics.log_event("single_player_round_started", {"lives": selected_lives, "bots": 3, "difficulty": selected_difficulty})
+	Diagnostics.log_event("single_player_round_started", {"lives": bot_lives, "bots": 3, "difficulty": selected_difficulty})
 	for old_combatant in combatants:
 		if is_instance_valid(old_combatant):
 			old_combatant.queue_free()
@@ -1211,7 +1289,7 @@ func _start_round() -> void:
 	player = PlayerScript.new() as FpsPlayer
 	player.name = "Player"
 	player.game = self
-	player.lives_remaining = 1
+	player.lives_remaining = human_lives
 	player.position = available_spawns.pop_back()
 	player.health_changed.connect(_on_player_health_changed)
 	player.toilet_progress.connect(_on_toilet_progress)
@@ -1220,17 +1298,8 @@ func _start_round() -> void:
 	add_child(player)
 	combatants.append(player)
 
-	var colors := [Color("e05a4f"), Color("4f83dc"), Color("d4a83f")]
-	for index in 3:
-		var bot := BotScript.new() as ApartmentBot
-		bot.setup(index + 1, colors[index])
-		bot.game = self
-		bot.difficulty = selected_difficulty
-		bot.lives_remaining = selected_lives
-		bot.position = available_spawns.pop_back()
-		bot.died.connect(_on_combatant_died)
-		add_child(bot)
-		combatants.append(bot)
+	for index in BOT_COLORS.size():
+		_spawn_bot(index, bot_lives, available_spawns.pop_back())
 
 	ui_health.text = "HEALTH  100"
 	ui_health.modulate = Color.WHITE
@@ -1242,11 +1311,31 @@ func _start_round() -> void:
 	_show_banner("LAST ONE STANDING", 2.4)
 
 
+func _spawn_bot(index: int, lives: int, spawn: Vector3, replica: bool = false) -> ApartmentBot:
+	var bot := BotScript.new() as ApartmentBot
+	bot.setup(index + 1, BOT_COLORS[index])
+	bot.game = self
+	bot.difficulty = selected_difficulty
+	bot.lives_remaining = lives
+	bot.position = spawn
+	bot.replica_position = spawn
+	bot.is_network_replica = replica
+	if not replica:
+		bot.died.connect(_on_combatant_died)
+	add_child(bot)
+	combatants.append(bot)
+	return bot
+
+
+func are_teammates(first: Node, second: Node) -> bool:
+	return network_coop and ((first is NetworkFpsPlayer and second is NetworkFpsPlayer) or (first is ApartmentBot and second is ApartmentBot))
+
+
 func get_closest_opponent(requester: Node3D) -> Node3D:
 	var closest: Node3D
 	var closest_distance := INF
 	for combatant in combatants:
-		if combatant == requester or not is_instance_valid(combatant) or not combatant.get("is_alive"):
+		if combatant == requester or not is_instance_valid(combatant) or not combatant.get("is_alive") or are_teammates(requester, combatant):
 			continue
 		var distance := requester.global_position.distance_squared_to(combatant.global_position)
 		if distance < closest_distance:
@@ -1265,18 +1354,18 @@ func _on_combatant_died(combatant: Node) -> void:
 	})
 	if combatant == player:
 		update_local_lives(combatant.lives_remaining)
-		if not network_match_started:
+		if combatant.lives_remaining == 0 and not network_match_started:
 			return
 
-	var contenders := _get_remaining_contenders()
-	if contenders.size() <= 1:
-		if network_match_started:
-			_check_network_round_finished.call_deferred(death_round)
+	if network_match_started:
+		_check_network_round_finished.call_deferred(death_round)
+	else:
+		var contenders := _get_remaining_contenders()
+		if contenders.size() <= 1:
+			await get_tree().create_timer(0.15, false).timeout
+			if death_round == round_serial:
+				_finish_round(contenders)
 			return
-		await get_tree().create_timer(0.15, false).timeout
-		if death_round == round_serial:
-			_finish_round(contenders)
-		return
 
 	if combatant.lives_remaining > 0:
 		if combatant == player and not network_match_started:
@@ -1338,10 +1427,6 @@ func _choose_respawn_position(respawning: Node3D) -> Vector3:
 func _finish_round(contenders: Array[Node]) -> void:
 	if round_over or menu_root.visible:
 		return
-	if network_match_started:
-		var winner_id: int = contenders[0].peer_id if contenders.size() == 1 else 0
-		_network_round_finished.rpc(winner_id)
-		return
 	round_over = true
 	var winner := "Nobody"
 	if contenders.size() == 1:
@@ -1361,15 +1446,32 @@ func _check_network_round_finished(death_round: int) -> void:
 	if death_round != round_serial or not network_match_started or round_over:
 		return
 	var contenders := _get_remaining_contenders()
-	if contenders.size() <= 1:
-		_finish_round(contenders)
+	var winner_id := 0
+	if network_coop:
+		var humans_left := 0
+		var bots_left := 0
+		for contender in contenders:
+			if contender is ApartmentBot:
+				bots_left += 1
+			else:
+				humans_left += 1
+		if humans_left > 0 and bots_left > 0:
+			return
+		winner_id = PLAYERS_WIN if humans_left > 0 else (BOTS_WIN if bots_left > 0 else 0)
+	else:
+		if contenders.size() > 1:
+			return
+		winner_id = contenders[0].peer_id if contenders.size() == 1 else 0
+	_network_round_finished.rpc(winner_id, _build_network_results())
 
 
 @rpc("authority", "call_local", "reliable")
-func _network_round_finished(winner_id: int) -> void:
+func _network_round_finished(winner_id: int, stats_rows: Array) -> void:
 	round_over = true
 	var winner := str(lobby_players.get(winner_id, "Nobody"))
-	var won := winner_id == multiplayer.get_unique_id()
+	if network_coop and winner_id != 0:
+		winner = "Players" if winner_id == PLAYERS_WIN else "Bots"
+	var won := winner_id == PLAYERS_WIN if network_coop else winner_id == multiplayer.get_unique_id()
 	Diagnostics.log_event("round_finished", {"winner": winner, "networked": true})
 	if player:
 		player.input_enabled = false
@@ -1377,9 +1479,14 @@ func _network_round_finished(winner_id: int) -> void:
 	result_title.text = "YOU WIN!" if won else ("DRAW" if winner_id == 0 else "YOU LOST")
 	result_title.add_theme_color_override("font_color", Color("ffe879") if won else Color("ff789a"))
 	loss_note.text = "No players survived." if winner_id == 0 else "%s wins the match." % winner
+	if network_coop and winner_id != 0:
+		result_title.text = "TEAM WINS!" if won else "TEAM LOST"
+		loss_note.text = "Your team defeated the bots." if won else "The bots defeated your team."
 	if not is_network_host:
 		loss_note.text += "\nWaiting for the host to start a rematch."
 	loss_replay_button.visible = is_network_host
+	_layout_results(true)
+	_show_network_stats(stats_rows)
 	_update_network_rematch_button()
 	loss_root.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -1390,15 +1497,60 @@ func _network_round_finished(winner_id: int) -> void:
 
 
 func _update_network_rematch_button() -> void:
-	var can_rematch := lobby_players.size() >= MIN_NETWORK_PLAYERS
-	loss_replay_button.disabled = not can_rematch
-	loss_replay_button.text = "PLAY AGAIN" if can_rematch else "NEED AT LEAST 2 PLAYERS"
+	loss_replay_button.disabled = false
+	loss_replay_button.text = "PLAY WITH BOTS" if lobby_players.size() == 1 else "PLAY AGAIN"
+
+
+func _build_network_results() -> Array:
+	var rows: Array = []
+	var peer_ids := network_match_names.keys()
+	peer_ids.sort()
+	for id in peer_ids:
+		var stats: RoundStats = network_player_stats[id]
+		var player_name := str(network_match_names[id])
+		if not lobby_players.has(id):
+			player_name += " (left)"
+		rows.append([player_name, stats.kills, stats.deaths, stats.damage_dealt, stats.shots, "%d%%" % stats.accuracy(), stats.toilet_flushes])
+	return rows
+
+
+func _layout_results(network_results: bool) -> void:
+	results_stats_grid.visible = network_results
+	results_network_rules.visible = is_network_host and (network_results or bot_lobby_active)
+	results_content.add_theme_constant_override("separation", 12 if network_results else 20)
+	result_title.add_theme_font_size_override("font_size", 44 if network_results else 52)
+	loss_replay_button.custom_minimum_size.y = 52 if network_results else 64
+	loss_menu_button.custom_minimum_size.y = 52 if network_results else 64
+	results_panel.position = Vector2(170, 40) if network_results else Vector2(350, 115)
+	results_panel.size = Vector2(940, 640) if network_results else Vector2(580, 490)
+
+
+func _show_network_stats(rows: Array) -> void:
+	for child in results_stats_grid.get_children():
+		results_stats_grid.remove_child(child)
+		child.queue_free()
+	_add_stats_row(["PLAYER", "KILLS", "DEATHS", "DAMAGE", "SHOTS", "ACCURACY", "FLUSHES"], true)
+	for row in rows:
+		_add_stats_row(row, false)
+
+
+func _add_stats_row(values: Array, header: bool) -> void:
+	for index in values.size():
+		var label := Label.new()
+		label.text = str(values[index])
+		label.add_theme_font_size_override("font_size", 15 if header else 17)
+		label.add_theme_color_override("font_color", Color("f2bdda") if header else Color("f5f2ff"))
+		if index == 0:
+			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		else:
+			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		results_stats_grid.add_child(label)
 
 
 func _on_player_health_changed(current: int, _maximum: int) -> void:
 	ui_health.text = "HEALTH  %d" % current
 	ui_health.modulate = Color("ff6565") if current <= 30 else Color.WHITE
-	if not network_match_started and current <= 0 and not death_menu_pending:
+	if not network_match_started and current <= 0 and not death_menu_pending and is_instance_valid(player) and player.lives_remaining <= 1:
 		death_menu_pending = true
 		round_over = true
 		_return_to_menu_after_death.call_deferred()
@@ -1449,6 +1601,7 @@ func _show_singleplayer_results(won: bool) -> void:
 
 
 func _reset_singleplayer_results_buttons() -> void:
+	_layout_results(false)
 	loss_replay_button.visible = true
 	loss_replay_button.disabled = false
 	loss_replay_button.text = "PLAY AGAIN"
@@ -1461,14 +1614,20 @@ func _update_singleplayer_lives() -> void:
 	for combatant in combatants:
 		if is_instance_valid(combatant) and combatant != player:
 			remaining += combatant.lives_remaining
-	ui_lives.text = "YOU  1 LIFE    ENEMY LIVES  %d    %s" % [remaining, round_stats.clock_text()]
+	var human_lives := player.lives_remaining if is_instance_valid(player) else 0
+	ui_lives.text = "YOU  %d %s    ENEMY LIVES  %d    %s" % [human_lives, "LIFE" if human_lives == 1 else "LIVES", remaining, round_stats.clock_text()]
 
 
 func _round_rules_text() -> String:
-	return "%s · %s · %d bot %s" % [selected_floor_plan, selected_difficulty.capitalize(), selected_lives, "life" if selected_lives == 1 else "lives"]
+	if bot_lobby_active:
+		return "%s · %d lives per player · 3 bots" % [selected_floor_plan, selected_network_lives]
+	return "%s · %s · Player lives: %d · Bot lives: %d" % [selected_floor_plan, selected_difficulty.capitalize(), selected_player_lives, selected_lives]
 
 
 func record_player_shot(shooter: Node) -> int:
+	if network_match_started and shooter is NetworkFpsPlayer:
+		var stats: RoundStats = network_player_stats.get(shooter.peer_id)
+		return stats.record_shot() if stats else -1
 	return round_stats.record_shot() if shooter == player and not network_match_started else -1
 
 
@@ -1477,15 +1636,22 @@ func record_projectile_hit(shooter: Node, shot_id: int) -> void:
 		round_stats.record_hit(shot_id)
 
 
+func record_player_flush(shooter: FpsPlayer) -> void:
+	if network_match_started and shooter is NetworkFpsPlayer:
+		var stats: RoundStats = network_player_stats.get(shooter.peer_id)
+		if stats:
+			stats.toilet_flushes += 1
+
+
 func _play_again_after_loss() -> void:
-	if network_match_started:
+	if is_network_host:
 		_start_network_match()
 	else:
 		_start_round()
 
 
 func _leave_results() -> void:
-	if network_match_started:
+	if network_match_started or bot_lobby_active:
 		_leave_multiplayer_menu()
 	else:
 		_show_main_menu()
@@ -1495,6 +1661,7 @@ func _on_toilet_progress(current: int, total: int) -> void:
 	var weapon_name := player.weapon_display_name() if player else "PISTOL"
 	var damage_text := player.weapon_damage_text() if player else "24"
 	ui_toilets.text = "TOILETS  %d / %d    %s  %s" % [current, total, weapon_name, damage_text]
+	ui_toilets.modulate = Color.WHITE
 	_show_banner("TOILET FLUSHED  %d / %d\n%s!" % [current, total, weapon_name], 1.4)
 
 
@@ -1540,7 +1707,7 @@ func _create_ui() -> void:
 	hud_root.add_child(ui_lives)
 
 	var controls := _ui_label(24, Vector2(28, 650), 15)
-	controls.text = "WASD MOVE    SHIFT SPRINT    SPACE JUMP    LMB FIRE    RMB AIM    E USE / STAND    ESC MENU"
+	controls.text = "WASD MOVE    SHIFT SPRINT    SPACE JUMP    LMB FIRE    RMB AIM    B KNIFE    E USE / STAND    ESC MENU"
 	controls.modulate = Color(1, 1, 1, 0.62)
 	hud_root.add_child(controls)
 
@@ -1600,9 +1767,9 @@ func _create_loss_screen(canvas: CanvasLayer) -> void:
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	background.color = Color("17121f")
 	loss_root.add_child(background)
-	var panel := PanelContainer.new()
-	panel.position = Vector2(350,115)
-	panel.size = Vector2(580,490)
+	results_panel = PanelContainer.new()
+	results_panel.position = Vector2(350, 115)
+	results_panel.size = Vector2(580, 490)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color("211827")
 	style.border_color = Color("ed5b82")
@@ -1612,28 +1779,37 @@ func _create_loss_screen(canvas: CanvasLayer) -> void:
 	style.content_margin_right = 36
 	style.content_margin_top = 28
 	style.content_margin_bottom = 28
-	panel.add_theme_stylebox_override("panel",style)
-	loss_root.add_child(panel)
-	var content := VBoxContainer.new()
-	content.add_theme_constant_override("separation",20)
-	panel.add_child(content)
+	results_panel.add_theme_stylebox_override("panel", style)
+	loss_root.add_child(results_panel)
+	results_content = VBoxContainer.new()
+	results_content.add_theme_constant_override("separation", 20)
+	results_panel.add_child(results_content)
 	result_title = Label.new()
 	result_title.text = "YOU LOST"
 	result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	result_title.add_theme_font_size_override("font_size",52)
 	result_title.add_theme_color_override("font_color",Color("ff789a"))
-	content.add_child(result_title)
+	results_content.add_child(result_title)
 	loss_note = Label.new()
 	loss_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	loss_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	loss_note.add_theme_font_size_override("font_size",18)
-	content.add_child(loss_note)
+	results_content.add_child(loss_note)
+	results_stats_grid = GridContainer.new()
+	results_stats_grid.columns = 7
+	results_stats_grid.add_theme_constant_override("h_separation", 18)
+	results_stats_grid.add_theme_constant_override("v_separation", 4)
+	results_stats_grid.hide()
+	results_content.add_child(results_stats_grid)
+	results_network_rules = _create_network_rules()
+	results_network_rules.hide()
+	results_content.add_child(results_network_rules)
 	loss_replay_button = _menu_button("PLAY AGAIN")
 	loss_replay_button.pressed.connect(_play_again_after_loss)
-	content.add_child(loss_replay_button)
+	results_content.add_child(loss_replay_button)
 	loss_menu_button = _menu_button("MAIN MENU")
 	loss_menu_button.pressed.connect(_leave_results)
-	content.add_child(loss_menu_button)
+	results_content.add_child(loss_menu_button)
 
 
 func _create_main_menu(canvas: CanvasLayer) -> void:
@@ -1707,19 +1883,33 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	content.add_child(spacer)
 
 	var lives_row := HBoxContainer.new()
-	lives_row.add_theme_constant_override("separation", 20)
+	lives_row.add_theme_constant_override("separation", 12)
+	var player_lives_label := Label.new()
+	player_lives_label.text = "PLAYER LIVES"
+	player_lives_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	player_lives_label.add_theme_font_size_override("font_size", 16)
+	lives_row.add_child(player_lives_label)
+	player_lives_selector = OptionButton.new()
+	player_lives_selector.custom_minimum_size = Vector2(65, 50)
+	player_lives_selector.tooltip_text = "Your lives per single-player round"
+	for life_count in LIFE_OPTIONS:
+		player_lives_selector.add_item(str(life_count))
+		player_lives_selector.set_item_metadata(player_lives_selector.item_count - 1, life_count)
+	player_lives_selector.item_selected.connect(func(index: int): selected_player_lives = int(player_lives_selector.get_item_metadata(index)))
+	lives_row.add_child(player_lives_selector)
 	var lives_label := Label.new()
 	lives_label.text = "BOT LIVES"
 	lives_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lives_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	lives_label.add_theme_font_size_override("font_size", 18)
+	lives_label.add_theme_font_size_override("font_size", 16)
 	lives_label.add_theme_color_override("font_color", Color("f7d7f3"))
 	lives_row.add_child(lives_label)
 	lives_selector = OptionButton.new()
-	lives_selector.custom_minimum_size = Vector2(150, 50)
+	lives_selector.custom_minimum_size = Vector2(65, 50)
+	lives_selector.tooltip_text = "Lives for each bot"
 	lives_selector.add_theme_font_size_override("font_size", 19)
-	for life_count in [1, 2, 3, 5]:
-		lives_selector.add_item("%d %s" % [life_count, "LIFE" if life_count == 1 else "LIVES"])
+	for life_count in LIFE_OPTIONS:
+		lives_selector.add_item(str(life_count))
 		lives_selector.set_item_metadata(lives_selector.item_count - 1, life_count)
 	lives_selector.select(0)
 	lives_selector.item_selected.connect(_on_lives_selected)
@@ -1735,7 +1925,11 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	floor_selector.add_item("basment")
 	floor_selector.add_item("2nd floor")
 	floor_selector.select(1 if selected_floor_plan == "2nd floor" else 0)
-	floor_selector.item_selected.connect(func(index: int): _load_floor_plan("2nd floor" if index == 1 else "basment"))
+	floor_selector.item_selected.connect(func(index: int):
+		_load_floor_plan(FLOOR_PLANS[index])
+		selected_network_map = selected_floor_plan
+		_sync_network_rules()
+	)
 	floor_row.add_child(floor_selector)
 	content.add_child(floor_row)
 	var difficulty_row := HBoxContainer.new()
@@ -1773,7 +1967,7 @@ func _create_main_menu(canvas: CanvasLayer) -> void:
 	content.add_child(crash_logs_button)
 
 	var note := Label.new()
-	note.text = "You have one life. Lose, then retry or return here.\nFlush all three toilets for the rainbow rifle."
+	note.text = "Choose your lives and each bot's lives independently.\nFlush all three toilets for the rainbow rifle."
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 15)
@@ -1838,18 +2032,11 @@ func _create_multiplayer_menu(canvas: CanvasLayer) -> void:
 	player_count_selector = OptionButton.new()
 	player_count_selector.custom_minimum_size = Vector2(170, 46)
 	for count in range(MIN_NETWORK_PLAYERS, MAX_NETWORK_PLAYERS + 1):
-		player_count_selector.add_item("%d PLAYERS" % count)
+		player_count_selector.add_item("UP TO %d PLAYERS" % count)
 		player_count_selector.set_item_metadata(player_count_selector.item_count - 1, count)
 	player_count_selector.select(selected_player_count - MIN_NETWORK_PLAYERS)
 	player_count_selector.item_selected.connect(_on_player_count_selected)
 	host_row.add_child(player_count_selector)
-	network_lives_selector = OptionButton.new()
-	network_lives_selector.custom_minimum_size = Vector2(105, 46)
-	network_lives_selector.tooltip_text = "Lives per player"
-	for life_count in LIFE_OPTIONS:
-		network_lives_selector.add_item("%d %s" % [life_count, "LIFE" if life_count == 1 else "LIVES"], life_count)
-	network_lives_selector.item_selected.connect(_on_network_lives_selected)
-	host_row.add_child(network_lives_selector)
 	host_port_edit = _network_line_edit(str(DEFAULT_NETWORK_PORT), "UDP PORT", 130)
 	host_port_edit.max_length = 5
 	host_row.add_child(host_port_edit)
@@ -1859,6 +2046,7 @@ func _create_multiplayer_menu(canvas: CanvasLayer) -> void:
 	host_button.pressed.connect(_host_lobby)
 	host_row.add_child(host_button)
 	content.add_child(host_row)
+	content.add_child(_create_network_rules())
 	upnp_checkbox = CheckBox.new()
 	upnp_checkbox.text = "Automatically open the UDP port for internet players (UPnP)"
 	upnp_checkbox.button_pressed = true
@@ -1899,7 +2087,7 @@ func _create_multiplayer_menu(canvas: CanvasLayer) -> void:
 	lobby_roster.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lobby_roster.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lobby_roster.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	lobby_roster.custom_minimum_size.y = 100
+	lobby_roster.custom_minimum_size.y = 78
 	lobby_roster.add_theme_font_size_override("font_size", 17)
 	lobby_roster.add_theme_color_override("font_color", Color("f7d7f3"))
 	content.add_child(lobby_roster)
@@ -1989,6 +2177,9 @@ func _menu_button(text: String) -> Button:
 
 
 func _show_main_menu() -> void:
+	if bot_lobby_active:
+		_leave_multiplayer_menu()
+		return
 	if pause_menu:
 		pause_menu.close_for_transition()
 	if not network_match_started:
@@ -2040,9 +2231,71 @@ func _on_player_count_selected(index: int) -> void:
 	selected_player_count = int(player_count_selector.get_item_metadata(index))
 
 
-func _on_network_lives_selected(index: int) -> void:
-	selected_network_lives = network_lives_selector.get_item_id(index)
-	if is_network_host and not network_match_started:
+func _create_network_rules() -> HBoxContainer:
+	var rules := HBoxContainer.new()
+	rules.alignment = BoxContainer.ALIGNMENT_CENTER
+	rules.add_theme_constant_override("separation", 12)
+	var mode_label := Label.new()
+	mode_label.text = "MODE"
+	rules.add_child(mode_label)
+	var mode_options := OptionButton.new()
+	mode_options.custom_minimum_size = Vector2(150, 36)
+	mode_options.add_item("FREE-FOR-ALL")
+	mode_options.add_item("CO-OP VS BOTS")
+	mode_options.select(int(selected_network_coop))
+	mode_options.item_selected.connect(func(index: int):
+		selected_network_coop = index == 1
+		_on_network_rules_changed()
+	)
+	network_mode_options.append(mode_options)
+	rules.add_child(mode_options)
+	var map_label := Label.new()
+	map_label.text = "MAP"
+	rules.add_child(map_label)
+	var map_options := OptionButton.new()
+	map_options.custom_minimum_size = Vector2(145, 36)
+	for floor_plan in FLOOR_PLANS:
+		map_options.add_item(floor_plan)
+	map_options.select(FLOOR_PLANS.find(selected_network_map))
+	map_options.item_selected.connect(func(index: int):
+		selected_network_map = FLOOR_PLANS[index]
+		_on_network_rules_changed()
+	)
+	network_map_options.append(map_options)
+	rules.add_child(map_options)
+	var lives_label := Label.new()
+	lives_label.text = "LIVES PER PLAYER"
+	rules.add_child(lives_label)
+	var lives := SpinBox.new()
+	lives.min_value = 1
+	lives.max_value = MAX_NETWORK_LIVES
+	lives.step = 1
+	lives.custom_minimum_size = Vector2(95, 36)
+	lives.set_value_no_signal(selected_network_lives)
+	lives.value_changed.connect(func(value: float):
+		selected_network_lives = int(value)
+		lives.get_line_edit().text = str(selected_network_lives)
+		_on_network_rules_changed()
+	)
+	network_lives_inputs.append(lives)
+	rules.add_child(lives)
+	return rules
+
+
+func _sync_network_rules() -> void:
+	for mode_options in network_mode_options:
+		mode_options.select(int(selected_network_coop))
+	for map_options in network_map_options:
+		map_options.select(FLOOR_PLANS.find(selected_network_map))
+	for lives in network_lives_inputs:
+		if int(lives.value) != selected_network_lives:
+			lives.set_value_no_signal(selected_network_lives)
+			lives.get_line_edit().text = str(selected_network_lives)
+
+
+func _on_network_rules_changed() -> void:
+	_sync_network_rules()
+	if is_network_host and not network_match_started and not bot_lobby_active:
 		_broadcast_lobby_state()
 
 
@@ -2137,7 +2390,7 @@ func _on_server_disconnected() -> void:
 
 func _on_network_peer_connected(peer_id: int) -> void:
 	Diagnostics.log_event("network_peer_connected", {"peer_id": peer_id, "host": is_network_host})
-	if is_network_host and not network_match_started:
+	if is_network_host and not network_match_started and not bot_lobby_active:
 		network_status.text = "A player connected. Waiting for their name..."
 
 
@@ -2148,13 +2401,13 @@ func _on_network_peer_disconnected(disconnected_peer_id: int) -> void:
 	lobby_players.erase(disconnected_peer_id)
 	if network_match_started:
 		_remove_disconnected_network_player(disconnected_peer_id)
-	else:
+	elif not bot_lobby_active:
 		_broadcast_lobby_state()
 
 
 @rpc("any_peer", "call_remote", "reliable")
 func _register_lobby_player(requested_name: String) -> void:
-	if not multiplayer.is_server() or network_match_started:
+	if not is_network_host or network_match_started or bot_lobby_active:
 		return
 	var sender_id := multiplayer.get_remote_sender_id()
 	if sender_id <= 1 or lobby_players.size() >= selected_player_count:
@@ -2167,11 +2420,11 @@ func _register_lobby_player(requested_name: String) -> void:
 func _broadcast_lobby_state() -> void:
 	if not multiplayer.is_server():
 		return
-	_receive_lobby_state.rpc(lobby_players, selected_player_count, selected_network_lives, network_port, _get_lan_address())
+	_receive_lobby_state.rpc(lobby_players, selected_player_count, selected_network_lives, selected_network_map, selected_network_coop, network_port, _get_lan_address())
 
 
 @rpc("authority", "call_local", "reliable")
-func _receive_lobby_state(players: Dictionary, player_limit: int, lives: int, port: int, lan_address: String) -> void:
+func _receive_lobby_state(players: Dictionary, player_limit: int, lives: int, map_name: String, coop: bool, port: int, lan_address: String) -> void:
 	lobby_players = players.duplicate()
 	network_port = port
 	var ids := lobby_players.keys()
@@ -2179,40 +2432,59 @@ func _receive_lobby_state(players: Dictionary, player_limit: int, lives: int, po
 	var names: Array[String] = []
 	for id in ids:
 		names.append(str(lobby_players[id]))
-	lobby_roster.text = "LOBBY  %d / %d  ·  %d %s PER PLAYER\n%s" % [
-		lobby_players.size(), player_limit, lives, "LIFE" if lives == 1 else "LIVES", "  •  ".join(names)
+	lobby_roster.text = "LOBBY  %d / %d  ·  %s  ·  %s  ·  %d %s PER PLAYER\n%s" % [
+		lobby_players.size(), player_limit, "CO-OP VS BOTS" if coop else "FREE-FOR-ALL",
+		map_name, lives, "LIFE" if lives == 1 else "LIVES", "  •  ".join(names)
 	]
 	if is_network_host:
 		_refresh_host_network_status(lan_address)
-		host_start_button.disabled = lobby_players.size() != selected_player_count
-		if "--qa-network-host" in OS.get_cmdline_user_args() and lobby_players.size() == selected_player_count:
+		host_start_button.disabled = false
+		host_start_button.text = "START WITH BOTS" if lobby_players.size() == 1 else "START MATCH"
+		if "--qa-network-host" in OS.get_cmdline_user_args() and lobby_players.size() == 2:
 			_start_network_match.call_deferred()
 	else:
 		network_status.text = "Connected. Waiting for the host to start."
 
 
 func _start_network_match() -> void:
-	if not is_network_host or not multiplayer.is_server() or (network_match_started and not round_over):
+	if not is_network_host or (hud_root.visible and not round_over):
 		return
-	if not network_match_started and lobby_players.size() != selected_player_count:
-		network_status.text = "Waiting for %d more player(s)." % (selected_player_count - lobby_players.size())
-		return
-	if lobby_players.size() < MIN_NETWORK_PLAYERS:
+	for lives in network_lives_inputs:
+		if lives.is_visible_in_tree():
+			lives.apply()
+	var peer := multiplayer.multiplayer_peer
+	peer.refuse_new_connections = true
+	for id in multiplayer.get_peers():
+		if not lobby_players.has(id):
+			peer.disconnect_peer(id)
+	if lobby_players.size() == 1 and not selected_network_coop:
+		_start_bot_lobby_match()
 		return
 	var peer_ids := lobby_players.keys()
 	peer_ids.sort()
 	Diagnostics.log_event("network_match_starting", {"players": peer_ids.size(), "lives": selected_network_lives})
-	var available_spawns := _network_spawn_positions()
+	var available_spawns := _coop_spawn_positions(selected_network_map) if selected_network_coop else _network_spawn_positions(selected_network_map)
 	available_spawns.shuffle()
-	var chosen_spawns: Array[Vector3] = []
-	for index in peer_ids.size():
-		chosen_spawns.append(available_spawns[index])
-	multiplayer.multiplayer_peer.refuse_new_connections = true
-	_begin_network_match.rpc(network_round_id + 1, peer_ids, lobby_players, selected_network_lives, chosen_spawns, selected_floor_plan)
+	var spawn_count := peer_ids.size() + (BOT_COLORS.size() if selected_network_coop else 0)
+	var chosen_spawns := available_spawns.slice(0, spawn_count)
+	_begin_network_match.rpc(network_round_id + 1, peer_ids, lobby_players, selected_network_lives, chosen_spawns, selected_network_map, selected_network_coop)
+
+
+func _start_bot_lobby_match() -> void:
+	if network_match_started:
+		_clear_combatants()
+	network_match_started = false
+	network_coop = false
+	bot_lobby_active = true
+	if selected_floor_plan != selected_network_map:
+		_load_floor_plan(selected_network_map)
+	_start_round()
 
 
 @rpc("authority", "call_local", "reliable")
-func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array, map_name: String) -> void:
+func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictionary, lives: int, chosen_spawns: Array, map_name: String, coop: bool) -> void:
+	if not multiplayer.get_unique_id() in peer_ids:
+		return
 	if pause_menu:
 		pause_menu.close_for_transition()
 	round_stats.active = false
@@ -2221,9 +2493,12 @@ func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictiona
 	if selected_floor_plan != map_name:
 		_load_floor_plan(map_name)
 	network_match_started = true
+	network_coop = coop
+	bot_lobby_active = false
 	network_round_id = match_id
 	round_over = false
 	lobby_players = player_names.duplicate()
+	network_match_names = player_names.duplicate()
 	_apply_floor_style()
 	Diagnostics.log_event("network_match_started", {"local_peer_id": multiplayer.get_unique_id(), "players": peer_ids.size(), "lives": lives, "host": multiplayer.is_server()})
 	network_state_time = 0.0
@@ -2234,7 +2509,7 @@ func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictiona
 	menu_root.visible = false
 	multiplayer_menu_root.visible = false
 
-	spawn_positions = _network_spawn_positions()
+	spawn_positions = _coop_spawn_positions(map_name) if coop else _network_spawn_positions()
 	for index in peer_ids.size():
 		var id := int(peer_ids[index])
 		var network_player := NetworkPlayerScript.new() as NetworkFpsPlayer
@@ -2245,7 +2520,13 @@ func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictiona
 		combatants.append(network_player)
 		network_players[id] = network_player
 		if multiplayer.is_server():
+			var stats := RoundStats.new()
+			stats.reset()
+			network_player_stats[id] = stats
 			network_player.died.connect(_on_combatant_died)
+	if coop:
+		for index in BOT_COLORS.size():
+			network_bots.append(_spawn_bot(index, lives, chosen_spawns[peer_ids.size() + index], not multiplayer.is_server()))
 
 	var local_id := multiplayer.get_unique_id()
 	player = network_players.get(local_id) as FpsPlayer
@@ -2261,13 +2542,13 @@ func _begin_network_match(match_id: int, peer_ids: Array, player_names: Dictiona
 	ui_toilets.text = "TOILETS  0 / 3    PISTOL  24"
 	ui_toilets.modulate = Color.WHITE
 	ui_lives.text = "LIVES  %d" % lives
-	_show_banner("LAST ONE STANDING", 2.4)
+	_show_banner("CO-OP VS BOTS" if coop else "LAST ONE STANDING", 2.4)
 	if match_id == 1 and ("--qa-network-host" in OS.get_cmdline_user_args() or "--qa-network-client" in OS.get_cmdline_user_args()):
 		_finish_qa_network_test.call_deferred()
 
 
-func _network_spawn_positions() -> Array[Vector3]:
-	if selected_floor_plan == "2nd floor":
+func _network_spawn_positions(map_name: String = "") -> Array[Vector3]:
+	if (selected_floor_plan if map_name.is_empty() else map_name) == "2nd floor":
 		return SecondFloor.spawns()
 	return [
 		_expanded(Vector3(1.35, 0.05, 3.55)), _expanded(Vector3(2.5, 0.05, 1.7)),
@@ -2275,6 +2556,19 @@ func _network_spawn_positions() -> Array[Vector3]:
 		_expanded(Vector3(3.55, 0.05, 7.3)), _expanded(Vector3(2.85, 0.05, 8.8)),
 		_expanded(Vector3(6.3, 0.05, 7.55)), _expanded(Vector3(8.7, 0.05, 7.4))
 	]
+
+
+func _coop_spawn_positions(map_name: String) -> Array[Vector3]:
+	var positions := _network_spawn_positions(map_name)
+	# Three additional clear positions keep the bot team separate from all eight human spawns.
+	if map_name == "2nd floor":
+		var doorways := SecondFloor.doorways()
+		for index in [3, 6, 8]:
+			positions.append(doorways[index] + Vector3.UP * 0.05)
+	else:
+		for point in [Vector2(419, 232.5), Vector2(507, 289.5), Vector2(412.5, 489)]:
+			positions.append(_plan(point) + Vector3.UP * 0.05)
+	return positions
 
 
 func send_local_network_input(move_input: Vector2, sprinting: bool, firing: bool, yaw: float, pitch: float) -> void:
@@ -2301,7 +2595,7 @@ func _server_receive_input(match_id: int, move_input: Vector2, sprinting: bool, 
 func _server_receive_action(match_id: int, action: String) -> void:
 	if not multiplayer.is_server() or not network_match_started or round_over or match_id != network_round_id:
 		return
-	if action != "jump" and action != "interact":
+	if action not in ["jump", "interact", "knife"]:
 		return
 	var sender_id := multiplayer.get_remote_sender_id()
 	var sender_player := network_players.get(sender_id) as NetworkFpsPlayer
@@ -2326,17 +2620,22 @@ func _broadcast_network_state() -> void:
 			"weapon": network_player.current_weapon,
 			"toilets": network_player.flushed_toilets.keys()
 		}
-	_receive_network_state.rpc(network_round_id, state)
+	var bot_states: Array = []
+	for bot in network_bots:
+		bot_states.append(bot.get_network_state())
+	_receive_network_state.rpc(network_round_id, state, bot_states)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered", 1)
-func _receive_network_state(match_id: int, state: Dictionary) -> void:
+func _receive_network_state(match_id: int, state: Dictionary, bot_states: Array) -> void:
 	if not network_match_started or match_id != network_round_id:
 		return
 	for id in state:
 		var network_player := network_players.get(id) as NetworkFpsPlayer
 		if network_player:
 			network_player.apply_network_state(state[id])
+	for index in network_bots.size():
+		network_bots[index].apply_network_state(bot_states[index])
 
 
 func _remove_disconnected_network_player(disconnected_peer_id: int) -> void:
@@ -2371,6 +2670,9 @@ func _clear_combatants() -> void:
 			old_combatant.queue_free()
 	combatants.clear()
 	network_players.clear()
+	network_bots.clear()
+	network_player_stats.clear()
+	network_match_names.clear()
 	player = null
 
 
@@ -2381,6 +2683,8 @@ func _close_network_connection() -> void:
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	is_network_host = false
 	network_match_started = false
+	network_coop = false
+	bot_lobby_active = false
 	network_round_id = 0
 	player_count_selector.disabled = false
 
@@ -2570,18 +2874,10 @@ func update_local_lives(lives: int) -> void:
 		_show_banner("RESPAWNING…", 1.1)
 
 
-func update_local_powerup(current_damage: int, weapon_name: String = "") -> void:
-	if weapon_name == FpsPlayer.WEAPON_RAINBOW_RIFLE or current_damage == 40:
-		ui_toilets.modulate = Color("ff53e4")
-		_show_banner("TRIPLE-SHIT!", 1.0)
-
-
-func update_local_toilets(count: int, current_damage: int, weapon_name: String = "") -> void:
-	var display_name := player.weapon_display_name() if player and player.has_method("weapon_display_name") else weapon_name.replace("_", " ").to_upper()
-	var damage_text := player.weapon_damage_text() if player and player.has_method("weapon_damage_text") else str(current_damage)
-	ui_toilets.text = "TOILETS  %d / 3    %s  %s" % [count, display_name, damage_text]
+func update_local_toilets(count: int, weapon_name: String) -> void:
+	_on_toilet_progress(count, 3)
 	if count == 3 and weapon_name == FpsPlayer.WEAPON_RAINBOW_RIFLE:
-		update_local_powerup(current_damage, weapon_name)
+		_on_powerup_activated()
 
 
 func _ui_label(width: float, position: Vector2, font_size: int) -> Label:
@@ -2606,12 +2902,21 @@ func _show_banner(text: String, duration: float) -> void:
 	banner_time = duration
 
 
-func report_combat_hit(victim: Node3D, attacker: Node, killed: bool) -> void:
+func report_combat_hit(victim: Node3D, attacker: Node, killed: bool, amount: int = 0) -> void:
 	var source_position: Vector3 = attacker.global_position if attacker is Node3D else victim.global_position
 	if network_match_started:
 		if multiplayer.is_server():
 			var attacker_id: int = attacker.peer_id if attacker is NetworkFpsPlayer else 0
 			var victim_id: int = victim.peer_id if victim is NetworkFpsPlayer else 0
+			var victim_stats: RoundStats = network_player_stats.get(victim_id)
+			if killed and victim_stats:
+				victim_stats.deaths += 1
+			var attacker_stats: RoundStats = network_player_stats.get(attacker_id)
+			if attacker_stats and attacker_id != victim_id:
+				attacker_stats.damage_dealt += amount
+				attacker_stats.record_hit(attacker.active_shot_id)
+				if killed:
+					attacker_stats.kills += 1
 			_receive_combat_feedback.rpc(victim_id,attacker_id,source_position,killed)
 	else:
 		if attacker == player and victim != player and round_stats.active:
@@ -2639,10 +2944,10 @@ func _present_combat_feedback(was_hurt: bool, scored_hit: bool, source_position:
 		SoundEffects.play_effect("hurt",player.global_position)
 
 
-func emit_world_sound(effect: String, position: Vector3) -> void:
+func emit_world_sound(effect: String, position: Vector3, shooter: Node = null) -> void:
 	if effect in ["pistol","rifle","rainbow_rifle","shotgun","bazooka"]:
 		for combatant in combatants:
-			if combatant is ApartmentBot and combatant.is_alive:
+			if combatant is ApartmentBot and combatant.is_alive and not are_teammates(shooter, combatant):
 				combatant.hear_gunshot(position)
 	if network_match_started:
 		if multiplayer.is_server():
@@ -2663,8 +2968,17 @@ func spawn_impact(position: Vector3, normal: Vector3, powered_up: bool) -> void:
 
 
 func spawn_rocket(origin: Vector3, direction: Vector3, attacker: Node, max_damage: int = 90) -> void:
-	if not network_match_started and not round_over:
+	if round_over:
+		return
+	if not network_match_started:
 		SingleplayerCombat.spawn_rocket(self, origin, direction, attacker, max_damage)
+	elif multiplayer.is_server():
+		var end := origin + direction * FpsPlayer.FIRE_DISTANCE
+		var exclude: Array[RID] = [attacker.get_rid()] if attacker is CollisionObject3D else []
+		var query := PhysicsRayQueryParameters3D.create(origin, end, 3, exclude)
+		var result := get_world_3d().direct_space_state.intersect_ray(query)
+		var impact_position: Vector3 = result.position if result else end
+		spawn_explosion(impact_position, attacker, 2.6, max_damage)
 
 
 func spawn_explosion(position: Vector3, attacker: Node, radius: float, max_damage: int, direct_hit: Node = null, normal: Vector3 = Vector3.ZERO, shot_id: int = -1) -> void:

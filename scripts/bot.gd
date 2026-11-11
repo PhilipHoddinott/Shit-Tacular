@@ -13,6 +13,9 @@ var health := MAX_HEALTH
 var regeneration := preload("res://scripts/health_regeneration.gd").new()
 var lives_remaining := 1
 var is_alive := true
+var is_network_replica := false
+var replica_position := Vector3.ZERO
+var replica_yaw := 0.0
 var game: Node
 var bot_number := 1
 var difficulty := "normal"
@@ -148,16 +151,16 @@ func _create_body() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if is_network_replica:
+		var weight := minf(delta * 14.0, 1.0)
+		global_position = global_position.lerp(replica_position, weight)
+		rotation.y = lerp_angle(rotation.y, replica_yaw, weight)
+		if is_alive and not game.round_over:
+			_animate_status(delta)
+		return
 	if not is_alive or not game or game.round_over or game.navigation_pending:
 		return
-	spawn_protection_remaining = maxf(0.0, spawn_protection_remaining - delta)
-	spawn_ring.visible = spawn_protection_remaining > 0.0
-	if spawn_ring.visible:
-		spawn_ring.scale = Vector3.ONE * (1.0 + 0.14 * sin(spawn_protection_remaining * 18.0))
-	if current_weapon == "rainbow_rifle":
-		rainbow_time += delta
-		weapon_material.albedo_color = Color.from_hsv(fmod(rainbow_time * 0.1, 1.0), 0.82, 1.0)
-		weapon_material.emission = weapon_material.albedo_color
+	_animate_status(delta)
 	health = regeneration.tick(delta, health, is_alive)
 	if not is_on_floor():
 		velocity.y -= gravity * delta
@@ -226,11 +229,48 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 
+func _animate_status(delta: float) -> void:
+	spawn_protection_remaining = maxf(0.0, spawn_protection_remaining - delta)
+	spawn_ring.visible = spawn_protection_remaining > 0.0
+	if spawn_ring.visible:
+		spawn_ring.scale = Vector3.ONE * (1.0 + 0.14 * sin(spawn_protection_remaining * 18.0))
+	if current_weapon == "rainbow_rifle":
+		rainbow_time += delta
+		weapon_material.albedo_color = Color.from_hsv(fmod(rainbow_time * 0.1, 1.0), 0.82, 1.0)
+		weapon_material.emission = weapon_material.albedo_color
+
+
+func get_network_state() -> Dictionary:
+	return {
+		"position": global_position,
+		"yaw": rotation.y,
+		"health": health,
+		"lives": lives_remaining,
+		"alive": is_alive,
+		"weapon": current_weapon,
+		"protection": spawn_protection_remaining
+	}
+
+
+func apply_network_state(state: Dictionary) -> void:
+	replica_position = state.position
+	replica_yaw = state.yaw
+	if state.alive and (not is_alive or state.lives < lives_remaining):
+		respawn_at(replica_position, replica_yaw)
+	elif not state.alive and is_alive:
+		_fall()
+	health = state.health
+	lives_remaining = state.lives
+	spawn_protection_remaining = state.protection
+	if state.weapon != current_weapon:
+		equip_weapon(state.weapon)
+
+
 func _find_visible_opponent() -> Node3D:
 	var nearest: Node3D
 	var best := 18.0
 	for candidate in game.combatants:
-		if candidate == self or not is_instance_valid(candidate) or not candidate.is_alive:
+		if candidate == self or not is_instance_valid(candidate) or not candidate.is_alive or game.are_teammates(self, candidate):
 			continue
 		var grace: Variant = candidate.get("spawn_protection_remaining")
 		if grace != null and float(grace) > 0.0:
@@ -293,7 +333,7 @@ func _has_line_of_sight(aim_position: Vector3) -> bool:
 func _shoot(aim_position: Vector3) -> void:
 	if spawn_protection_remaining > 0.0:
 		return
-	game.emit_world_sound(current_weapon, global_position + Vector3.UP)
+	game.emit_world_sound(current_weapon, global_position + Vector3.UP, self)
 	fire_time = shot_interval() * randf_range(0.9, 1.2)
 	var origin := global_position + Vector3.UP * 1.28
 	var distance := origin.distance_to(aim_position)
@@ -465,12 +505,15 @@ func equip_weapon(weapon_name: String) -> void:
 
 
 func apply_damage(amount: int, _attacker: Node = null) -> void:
-	if not is_alive or amount <= 0 or spawn_protection_remaining > 0.0:
+	if is_network_replica or not is_alive or amount <= 0 or spawn_protection_remaining > 0.0:
+		return
+	if game and (game.round_over or game.are_teammates(self, _attacker)):
 		return
 	regeneration.reset()
+	var old_health := health
 	health = maxi(health - amount, 0)
 	if game:
-		game.report_combat_hit(self,_attacker,health == 0)
+		game.report_combat_hit(self, _attacker, health == 0, old_health - health)
 	if _attacker is Node3D:
 		toilet_target = null
 		destination = _attacker.global_position
@@ -479,14 +522,18 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 	body_material.albedo_color = body_material.albedo_color.lerp(Color.WHITE, 0.25)
 	create_tween().tween_property(body_material,"albedo_color",base_body_color,0.2)
 	if health <= 0:
-		is_alive = false
-		spawn_ring.visible = false
-		collision_layer = 0
-		collision_mask = 0
-		velocity = Vector3.ZERO
-		death_tween = create_tween()
-		death_tween.tween_property(self,"rotation:z",deg_to_rad(82.0),0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		_fall()
 		died.emit(self)
+
+
+func _fall() -> void:
+	is_alive = false
+	spawn_ring.visible = false
+	collision_layer = 0
+	collision_mask = 0
+	velocity = Vector3.ZERO
+	death_tween = create_tween()
+	death_tween.tween_property(self, "rotation:z", deg_to_rad(82.0), 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 
 
 func respawn_at(spawn_position: Vector3, yaw: float) -> void:

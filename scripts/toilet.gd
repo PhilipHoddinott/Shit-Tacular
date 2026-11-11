@@ -85,6 +85,8 @@ func interact(player: Node) -> void:
 
 
 func interaction_text(player: Node) -> String:
+	if player is FpsPlayer and player.can_reroll_weapon():
+		return "Press E to reroll weapon"
 	if player.has_method("has_flushed_toilet") and player.has_flushed_toilet(toilet_id):
 		return "Already flushed"
 	return "Press E to flush"

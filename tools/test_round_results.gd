@@ -91,6 +91,19 @@ func _run() -> void:
 	shooter._fire()
 	_expect(target.health <= 76, "actual shotgun hits opponent with multiple pellets")
 	_expect(game.round_stats.shots == 1 and game.round_stats.successful_shots.size() == 1 and game.round_stats.accuracy() == 100, "shotgun pellets count as one successful trigger pull")
+	target.health = 100
+	target.global_position = Vector3(100, 0, 98.8)
+	shooter.neck.rotation.x = 0.0
+	await _frames(2)
+	shooter._swing_knife()
+	shooter._swing_knife()
+	_expect(target.health == 50, "knife hits at close range and respects its cooldown")
+	_expect(shooter.current_weapon == "shotgun" and game.round_stats.shots == 1, "knife keeps the firearm equipped and does not count as a shot")
+	target.global_position = Vector3(100, 0, 97)
+	shooter._tick_knife(1.0)
+	await _frames(2)
+	shooter._swing_knife()
+	_expect(target.health == 50, "knife cannot hit outside melee range")
 	shooter.register_toilet_flush(0)
 	shooter.register_toilet_flush(1)
 	game.round_stats.elapsed = 65.0

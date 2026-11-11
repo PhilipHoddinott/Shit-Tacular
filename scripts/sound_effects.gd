@@ -14,7 +14,7 @@ func _exit_tree() -> void:
 		voice.stop()
 
 func _ready() -> void:
-	for effect in ["pistol", "shotgun", "rifle", "rainbow_rifle", "bazooka", "impact", "explosion", "flush", "equip", "powerup", "hurt"]:
+	for effect in ["pistol", "shotgun", "rifle", "rainbow_rifle", "bazooka", "knife", "impact", "explosion", "flush", "equip", "powerup", "hurt"]:
 		streams[effect] = _synthesize(effect)
 
 func play_effect(effect: String, location: Vector3) -> void:
@@ -40,7 +40,7 @@ func _synthesize(effect: String) -> AudioStreamWAV:
 		"explosion": duration = 1.0
 		"flush": duration = 1.8
 		"powerup": duration = 0.8
-		"impact", "equip", "hurt": duration = 0.12
+		"impact", "equip", "hurt", "knife": duration = 0.12
 	var samples := int(duration * SAMPLE_RATE)
 	var bytes := PackedByteArray()
 	bytes.resize(samples * 2)
@@ -63,6 +63,7 @@ func _synthesize(effect: String) -> AudioStreamWAV:
 				phase += TAU * [440.0, 554.37, 659.25, 880.0][note] / SAMPLE_RATE
 				value = sin(phase) * 0.35 * sin(PI * fmod(progress * 4.0, 1.0))
 			"equip": value = (noise * 0.35 + sin(t * TAU * 1300.0) * 0.2) * envelope
+			"knife": value = (noise - low_noise) * sin(PI * progress) * (1.0 - progress) * 0.42
 			"hurt": value = (sin(t * TAU * 120.0) * 0.4 + low_noise) * envelope
 			"impact": value = noise * envelope * 0.5
 			"explosion", "bazooka": value = (low_noise * 2.0 + sin(t * TAU * 52.0) * 0.3) * envelope

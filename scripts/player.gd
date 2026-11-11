@@ -14,6 +14,10 @@ const BASE_DAMAGE := 24
 const MAX_HEALTH := 100
 const INTERACT_DISTANCE := 2.4
 const FIRE_DISTANCE := 40.0
+const KNIFE_RANGE := 1.75
+const KNIFE_DAMAGE := 50
+const KNIFE_COOLDOWN := 0.55
+const KNIFE_SWING_DURATION := 0.26
 const STANDING_CAMERA_HEIGHT := 1.34
 const SITTING_CAMERA_HEIGHT := 0.94
 const WEAPON_PISTOL := "pistol"
@@ -38,6 +42,8 @@ var weapon_material: StandardMaterial3D
 var muzzle_flash: OmniLight3D
 var fire_cooldown := 0.0
 var active_shot_id := -1
+var knife_cooldown := 0.0
+var knife_model: Node3D
 var recoil := 0.0
 var rainbow_time := 0.0
 var hip_weapon_position := Vector3.ZERO
@@ -73,6 +79,23 @@ func _ready() -> void:
 
 	_create_weapon()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _create_knife_model() -> void:
+	knife_model = Node3D.new()
+	knife_model.name = "Knife"
+	camera.add_child(knife_model)
+	knife_model.hide()
+	var grip_material := StandardMaterial3D.new()
+	grip_material.albedo_color = Color("343040")
+	var steel_material := StandardMaterial3D.new()
+	steel_material.albedo_color = Color("c8d7e1")
+	steel_material.metallic = 0.72
+	steel_material.roughness = 0.28
+	_add_model_box(knife_model, Vector3.ZERO, Vector3(0.065, 0.065, 0.16), grip_material)
+	_add_model_box(knife_model, Vector3(0, 0, -0.09), Vector3(0.11, 0.035, 0.025), grip_material)
+	_add_model_box(knife_model, Vector3(0, 0, -0.22), Vector3(0.072, 0.022, 0.25), steel_material)
+	_add_model_box(knife_model, Vector3(0.013, 0, -0.34), Vector3(0.046, 0.02, 0.07), steel_material, Vector3(0, -0.48, 0))
 
 
 func _create_weapon() -> void:
@@ -196,6 +219,10 @@ func _rebuild_weapon_visual() -> void:
 
 
 func _add_weapon_box(position: Vector3, size: Vector3, material: StandardMaterial3D, rotation: Vector3 = Vector3.ZERO) -> void:
+	_add_model_box(weapon_root, position, size, material, rotation)
+
+
+func _add_model_box(parent: Node3D, position: Vector3, size: Vector3, material: StandardMaterial3D, rotation: Vector3 = Vector3.ZERO) -> void:
 	var part := MeshInstance3D.new()
 	var mesh := BoxMesh.new()
 	mesh.size = size
@@ -203,7 +230,7 @@ func _add_weapon_box(position: Vector3, size: Vector3, material: StandardMateria
 	part.position = position
 	part.rotation = rotation
 	part.material_override = material
-	weapon_root.add_child(part)
+	parent.add_child(part)
 
 
 func _add_weapon_cylinder(position: Vector3, radius: float, length: float, material: StandardMaterial3D, rotation: Vector3 = Vector3(PI * 0.5, 0.0, 0.0)) -> void:
@@ -230,8 +257,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	_tick_knife(delta)
 	if not is_alive:
 		return
+	if input_enabled and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_action_just_pressed("knife"):
+		_swing_knife()
 	_tick_regeneration(delta)
 	fire_cooldown = maxf(fire_cooldown - delta, 0.0)
 	muzzle_flash.light_energy = move_toward(muzzle_flash.light_energy, 0.0, delta * 30.0)
@@ -314,7 +344,7 @@ func _fire() -> void:
 	if game and game.has_method("record_player_shot"):
 		active_shot_id = game.record_player_shot(self)
 	if game:
-		game.emit_world_sound(current_weapon, global_position + Vector3.UP)
+		game.emit_world_sound(current_weapon, global_position + Vector3.UP, self)
 	match current_weapon:
 		WEAPON_SHOTGUN:
 			fire_cooldown = 0.82
@@ -333,36 +363,69 @@ func _fire() -> void:
 	var forward := -camera.global_basis.z
 	if current_weapon == WEAPON_BAZOOKA:
 		_fire_bazooka(origin, forward)
+		active_shot_id = -1
 		return
 	var pellet_count := 8 if current_weapon == WEAPON_SHOTGUN else 1
 	var spread := 0.075 if current_weapon == WEAPON_SHOTGUN else (0.012 if current_weapon == WEAPON_PISTOL else 0.006)
 	for _pellet in pellet_count:
 		var direction := (forward + camera.global_basis.x * randf_range(-spread, spread) + camera.global_basis.y * randf_range(-spread, spread)).normalized()
 		_fire_hitscan(origin, direction)
+	active_shot_id = -1
 
 
 func _fire_hitscan(origin: Vector3, direction: Vector3) -> void:
-	var end := origin + direction * FIRE_DISTANCE
+	_hit_with_ray(origin, direction, FIRE_DISTANCE, damage, current_weapon == WEAPON_RAINBOW_RIFLE)
+
+
+func _hit_with_ray(origin: Vector3, direction: Vector3, reach: float, hit_damage: int, powered_up: bool) -> void:
+	var end := origin + direction * reach
 	var query := PhysicsRayQueryParameters3D.create(origin, end, 3, [self])
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 	if result:
 		var collider: Object = result.collider
 		if collider.has_method("apply_damage"):
-			collider.apply_damage(damage, self)
+			collider.apply_damage(hit_damage, self)
 		if game and game.has_method("spawn_impact"):
-			game.spawn_impact(result.position, result.normal, current_weapon == WEAPON_RAINBOW_RIFLE)
+			game.spawn_impact(result.position, result.normal, powered_up)
+
+
+func _begin_knife_swing() -> bool:
+	if knife_cooldown > 0.0 or not is_alive or (game and game.round_over):
+		return false
+	knife_cooldown = KNIFE_COOLDOWN
+	if camera.current:
+		if not knife_model:
+			_create_knife_model()
+		_tick_knife(0.0)
+	return true
+
+
+func _swing_knife() -> void:
+	if not _begin_knife_swing():
+		return
+	if game:
+		game.emit_world_sound("knife", camera.global_position)
+	# A knife hit can earn a kill without counting toward firearm accuracy.
+	active_shot_id = -1
+	_hit_with_ray(camera.global_position, -camera.global_basis.z, KNIFE_RANGE, KNIFE_DAMAGE, false)
+
+
+func _tick_knife(delta: float) -> void:
+	knife_cooldown = maxf(0.0, knife_cooldown - delta)
+	if not knife_model:
+		return
+	var progress := (KNIFE_COOLDOWN - knife_cooldown) / KNIFE_SWING_DURATION
+	knife_model.visible = is_alive and progress < 1.0
+	weapon_root.visible = not knife_model.visible
+	if knife_model.visible:
+		var swing := sin(progress * PI)
+		knife_model.position = Vector3(lerpf(0.36, -0.25, progress), -0.24 + 0.13 * swing, -0.38 - 0.15 * swing)
+		knife_model.rotation = Vector3(0.08 - 0.4 * swing, lerpf(-0.8, 0.85, progress), -0.4)
 
 
 func _fire_bazooka(origin: Vector3, direction: Vector3) -> void:
-	if game and not game.network_match_started and game.has_method("spawn_rocket"):
+	if game:
 		game.spawn_rocket(origin, direction, self, damage)
-		return
-	var end := origin + direction * FIRE_DISTANCE
-	var query := PhysicsRayQueryParameters3D.create(origin, end, 3, [self])
-	var result := get_world_3d().direct_space_state.intersect_ray(query)
-	var impact_position: Vector3 = result.position if result else end
-	if game and game.has_method("spawn_explosion"):
-		game.spawn_explosion(impact_position, self, 2.6, damage)
 
 
 func _interact() -> void:
@@ -393,10 +456,13 @@ func get_interaction_prompt() -> String:
 
 
 func register_toilet_flush(toilet_id: int) -> void:
-	if flushed_toilets.has(toilet_id):
+	var reroll := can_reroll_weapon()
+	if flushed_toilets.has(toilet_id) and not reroll:
 		return
-	flushed_toilets[toilet_id] = true
-	if flushed_toilets.size() == 3:
+	if not reroll:
+		flushed_toilets[toilet_id] = true
+	var unlocked_rainbow := not reroll and can_reroll_weapon()
+	if unlocked_rainbow:
 		_equip_weapon(WEAPON_RAINBOW_RIFLE)
 	else:
 		var choices := [WEAPON_PISTOL, WEAPON_SHOTGUN, WEAPON_RIFLE, WEAPON_BAZOOKA]
@@ -404,13 +470,18 @@ func register_toilet_flush(toilet_id: int) -> void:
 		_equip_weapon(choices.pick_random())
 	toilet_progress.emit(flushed_toilets.size(), 3)
 	if game:
-		game.emit_world_sound("powerup" if flushed_toilets.size() == 3 else "equip", global_position + Vector3.UP)
-	if flushed_toilets.size() == 3:
+		game.record_player_flush(self)
+		game.emit_world_sound("powerup" if unlocked_rainbow else "equip", global_position + Vector3.UP)
+	if unlocked_rainbow:
 		powerup_activated.emit()
 
 
 func has_flushed_toilet(toilet_id: int) -> bool:
 	return flushed_toilets.has(toilet_id)
+
+
+func can_reroll_weapon() -> bool:
+	return flushed_toilets.size() >= 3
 
 
 func sit_on(chair: Node) -> void:
@@ -451,9 +522,10 @@ func apply_damage(amount: int, _attacker: Node = null) -> void:
 	if not is_alive or amount <= 0:
 		return
 	regeneration.reset()
+	var old_health := health
 	health = maxi(health - amount, 0)
 	if game:
-		game.report_combat_hit(self,_attacker,health == 0)
+		game.report_combat_hit(self, _attacker, health == 0, old_health - health)
 	health_changed.emit(health, MAX_HEALTH)
 	if health <= 0:
 		if sitting and is_instance_valid(sitting_chair):

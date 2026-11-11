@@ -5,18 +5,30 @@ const SAVE_PATH := "user://singleplayer_records.cfg"
 var elapsed := 0.0
 var shots := 0
 var kills := 0
+var deaths := 0
+var damage_dealt := 0
+var toilet_flushes := 0
 var successful_shots: Dictionary = {}
 var active := false
 var record_key := ""
 var summary := ""
 
-func start(map_name: String, difficulty: String, bot_lives: int) -> void:
+func start(map_name: String, difficulty: String, bot_lives: int, player_lives: int = 1) -> void:
+	reset()
+	record_key = "%s_%s_%d" % [map_name, difficulty, bot_lives]
+	if player_lives != 1:
+		record_key += "_player_%d" % player_lives
+
+func reset() -> void:
 	elapsed = 0.0
 	shots = 0
 	kills = 0
+	deaths = 0
+	damage_dealt = 0
+	toilet_flushes = 0
 	successful_shots.clear()
 	summary = ""
-	record_key = "%s_%s_%d" % [map_name, difficulty, bot_lives]
+	record_key = ""
 	active = true
 
 func tick(delta: float) -> void:

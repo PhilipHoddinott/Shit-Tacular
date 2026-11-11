@@ -12,15 +12,24 @@ A first-person, last-player-standing game set inside an apartment. Battle three 
 
 Choose **basment** (the original apartment) or **2nd floor** (traced from `otherApartmentFloorPlan.jpg`) in the main menu. Each map has its own furniture, spawn points, navigation, and three toilets. Both retain the source floor-plan drawing as their floor. In multiplayer, the host's selected map is loaded on every client when the match starts.
 
-Open `project.godot` in Godot 4.7.2 and press **F6** or **F5**. If you have the prepared Windows playtest folder, you can instead double-click `PLAY_GAME.bat`.
+Open `project.godot` in Godot 4.7.2, wait for the assets to finish importing, and press **F5** to play.
 
-You can also launch the project from PowerShell:
+### Windows setup from source
+
+1. Extract the Shit-Tacular ZIP and open the folder containing `project.godot`.
+2. Download the **Windows Standard (x86_64)** ZIP from the [Godot 4.7.2 release page](https://godotengine.org/download/archive/4.7.2-stable/).
+3. Extract both Godot executables into a folder named `Godot_v4.7.2-stable_win64` next to `project.godot`. Keep the regular executable and the `_console.exe` companion together.
+4. Run the regular Godot executable, click **Import** in the Project Manager, and select the game's `project.godot`. Wait for the editor to finish importing, then press **F5**. After the first import, you can double-click `PLAY_GAME.bat` to launch directly.
+
+To open the editor from PowerShell, run this from the folder containing `project.godot`.
 
 ```powershell
-.\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64.exe --path .
+& ".\Godot_v4.7.2-stable_win64\Godot_v4.7.2-stable_win64.exe" --editor --path .
 ```
 
-Choose 1, 2, 3, or 5 **bot lives** from the main menu. Every combatant begins with 100 health. Human players have one life: your death opens a loss screen with **Play Again** and **Main Menu**. Play Again starts a fresh match on the same floor plan with the same bot-lives setting. Bots respawn while lives remain. The last player standing wins.
+### Gameplay
+
+Choose 1, 2, 3, or 5 **player lives** and **bot lives** independently from the main menu for single player. Every combatant begins with 100 health and respawns while lives remain. Your final death opens a loss screen with **Play Again** and **Main Menu**. Play Again preserves both life settings and the floor plan. The last player standing wins.
 
 Players and bots regenerate **2 health per second after 5 seconds without taking damage**, up to 100 health. Taking another hit restarts the delay. Healing stops on death or when the round ends; multiplayer healing is controlled by the host.
 
@@ -28,7 +37,7 @@ Hold right mouse to zoom while aiming; release it to return to normal view. Rifl
 
 Confirmed hits flash a white hit marker; lethal hits flash gold. Incoming damage flashes the screen edges and shows the attack direction. Weapons have centered aiming sights, subtle movement sway, and recoil. Bots patrol, investigate nearby gunshots, pursue the last place they saw an opponent, and seek reachable cover at low health. Navigation is checked against walls and furniture on the selected map, and defeated bots animate a fall before respawning or remaining eliminated.
 
-Each unique toilet flush awards a random weapon: pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and lock in the glowing rainbow rifle, which cycles colors and deals 40 damage per bullet for the rest of the round, including after respawning.
+Your first two unique toilet flushes each award a random pistol, shotgun, rifle, or bazooka. Flush all three to trigger **TRIPLE-SHIT!** and equip the glowing rainbow rifle, which deals 40 damage per bullet. After that, flushing any toilet swaps your current gun for a random standard weapon. Your weapon and toilet progress carry through respawns.
 
 ## Single-player polish
 
@@ -54,6 +63,7 @@ The bottom-left minimap shows the selected floor plan. Your cyan arrow indicates
 | `Space` | Jump |
 | Left mouse | Fire the equipped weapon |
 | Hold right mouse | Aim / zoom (stronger magnification for rifles) |
+| `B` | Swing the knife at close range |
 | `E` | Flush a toilet, sit in a dining chair, or stand up |
 | `Escape` | Pause / resume single player; release or recapture the mouse in multiplayer |
 | `R` | Restart after the round ends |
@@ -65,11 +75,13 @@ All players must use the same native version of the game. One player hosts the m
 ### Host a match
 
 1. Open **Multiplayer** and enter your player name.
-2. Choose the total number of human players, from 2–8, and set **1, 2, 3, or 5 lives per player**.
+2. Set the lobby capacity, map, and **1–99 lives per player**. Choose **Free-for-All** to compete or **Co-op vs Bots** to team up against three bots.
 3. For an internet match, leave **Automatically open the UDP port** enabled.
 4. Select **Create Lobby**.
 5. Use **Copy LAN** for players on the same network, or **Copy Internet** for remote players, then send the copied `IP:port` address to them.
-6. When everyone has joined, select **Start Match**.
+6. Select **Start Match** whenever you're ready. The game starts with the players already in the lobby. If you're alone, **Start with Bots** puts you against three bots using the selected map and lives.
+
+In **Co-op vs Bots**, everyone on the human team shares the same win or loss. Both sides use the host's lives setting, and friendly fire is off. Your team wins when the bots run out of lives. Green dots on the minimap show teammates.
 
 ### Join a match
 
@@ -79,7 +91,7 @@ All players must use the same native version of the game. One player hosts the m
 
 ### Play a rematch
 
-Players respawn at full health while they have lives left. Eliminated players stay connected until everyone sees the result. The host can select **Play Again** to start a fresh match on the same map with the same lives setting and everyone still connected. At least two players are needed. Select **Main Menu** on the results screen to leave.
+Players respawn at full health while they have lives left. Eliminated players stay connected until everyone sees the results. The scoreboard shows each player's kills, deaths, damage dealt, shots, firearm accuracy, and rewarded flushes. The host can change the mode, map, and lives on that screen, then select **Play Again** to start with everyone still connected. If only the host remains, **Play with Bots** starts a bot match. Select **Main Menu** to leave.
 
 ### Connection notes
 
@@ -101,7 +113,7 @@ After a crash or connection problem:
 2. Select **Open Crash Logs** on the main menu.
 3. Send the newest `.log` file to the developer with a short description of what happened.
 
-If the game fails before reaching the menu, run `PLAY_GAME_DIAGNOSTIC.bat` and send the `startup-diagnostic.log` file from the folder it opens. On Windows, the normal log location is `%APPDATA%\Godot\app_userdata\Shit-Tacular\logs`.
+If the game fails before reaching the menu, run `PLAY_GAME_DIAGNOSTIC.bat` and send `startup-diagnostic.log` from `%APPDATA%\Godot\app_userdata\Shit-Tacular\logs`. If the launcher says it could not write the log, send the error shown in the console.
 
 Logs may contain player names and network addresses, so review them before sharing outside the playtest group. Native engine crashes may have a limited backtrace without matching debug symbols, but script errors and the gameplay or network events leading up to the failure should still be recorded.
 

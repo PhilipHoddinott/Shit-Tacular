@@ -69,13 +69,18 @@ func _draw() -> void:
 			draw_style_box(_toilet_marker(color), Rect2(p - Vector2(7, 9), Vector2(14, 18)))
 			draw_string(font, p + Vector2(-4, 5), str(toilet.toilet_id), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("17121f"))
 	var actors := visible_combatants()
+	var allies := 0
+	var opponents := 0
 	for actor in actors:
 		if actor == game.player:
 			continue
+		var ally: bool = game.are_teammates(game.player, actor)
+		allies += int(ally)
+		opponents += int(not ally)
 		var p := map_position(actor.global_position)
 		if map_rect.has_point(p):
 			draw_circle(p,6,Color("17121f"))
-			draw_circle(p,4,Color("ff657e"))
+			draw_circle(p,4,Color("78e6b6") if ally else Color("ff657e"))
 	if is_instance_valid(game.player) and game.player.is_alive:
 		var actor: Node3D = game.player
 		var p := map_position(actor.global_position)
@@ -87,8 +92,14 @@ func _draw() -> void:
 		draw_colored_polygon(triangle,Color("68eeff"))
 	draw_circle(Vector2(16,size.y-16),4,Color("68eeff"))
 	draw_string(font,Vector2(27,size.y-11),"You",HORIZONTAL_ALIGNMENT_LEFT,-1,13)
-	draw_circle(Vector2(87,size.y-16),4,Color("ff657e"))
-	draw_string(font,Vector2(98,size.y-11),"Others · %d" % maxi(0,actors.size()-1),HORIZONTAL_ALIGNMENT_LEFT,-1,13)
+	if game.network_coop:
+		draw_circle(Vector2(80,size.y-16),4,Color("78e6b6"))
+		draw_string(font,Vector2(91,size.y-11),"Allies · %d" % allies,HORIZONTAL_ALIGNMENT_LEFT,-1,13)
+		draw_circle(Vector2(168,size.y-16),4,Color("ff657e"))
+		draw_string(font,Vector2(179,size.y-11),"Bots · %d" % opponents,HORIZONTAL_ALIGNMENT_LEFT,-1,13)
+	else:
+		draw_circle(Vector2(87,size.y-16),4,Color("ff657e"))
+		draw_string(font,Vector2(98,size.y-11),"Others · %d" % opponents,HORIZONTAL_ALIGNMENT_LEFT,-1,13)
 	if not game.network_match_started:
 		draw_string(font, Vector2(12, size.y-33), "Toilets: gold = loot · green = flushed", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("f7e1b9"))
 

@@ -11,6 +11,7 @@ var server_sprinting := false
 var server_firing := false
 var server_input_age := 0.0
 var queued_jump := false
+var queued_knife := false
 
 var target_position := Vector3.ZERO
 var target_yaw := 0.0
@@ -81,6 +82,8 @@ func _create_network_avatar() -> void:
 
 	var name_tag := Label3D.new()
 	name_tag.text = display_name
+	if network_game.network_coop:
+		name_tag.modulate = Color("78e6b6")
 	name_tag.font_size = 38
 	name_tag.pixel_size = 0.005
 	name_tag.outline_size = 8
@@ -105,12 +108,17 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_animate_weapon(delta)
+	_tick_knife(delta)
 	_client_tick(delta)
 
 
 func _server_simulate(delta: float) -> void:
 	if not is_alive:
 		return
+	_tick_knife(delta)
+	if queued_knife:
+		queued_knife = false
+		_swing_knife()
 	_tick_regeneration(delta)
 	server_input_age += delta
 	if server_input_age > 0.25:
@@ -161,6 +169,8 @@ func _client_tick(delta: float) -> void:
 			network_game.send_local_network_action("jump")
 		if Input.is_action_just_pressed("interact"):
 			network_game.send_local_network_action("interact")
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_action_just_pressed("knife") and _begin_knife_swing():
+			network_game.send_local_network_action("knife")
 
 	if has_network_state:
 		global_position = global_position.lerp(target_position, minf(delta * 14.0, 1.0))
@@ -181,6 +191,8 @@ func set_server_input(move_input: Vector2, sprinting: bool, firing: bool, yaw: f
 func queue_network_action(action: String) -> void:
 	if action == "jump":
 		queued_jump = true
+	elif action == "knife":
+		queued_knife = true
 	elif action == "interact" and is_alive:
 		_interact()
 
@@ -198,6 +210,8 @@ func apply_network_state(state: Dictionary) -> void:
 	var next_damage := int(state.get("damage", damage))
 	var next_weapon := str(state.get("weapon", current_weapon))
 	var toilet_ids: Array = state.get("toilets", [])
+	var weapon_changed := next_weapon != current_weapon
+	var progress_changed := toilet_ids.size() != flushed_toilets.size()
 	if next_health != health:
 		health = next_health
 		if is_local_player:
@@ -206,16 +220,16 @@ func apply_network_state(state: Dictionary) -> void:
 		lives_remaining = next_lives
 		if is_local_player:
 			network_game.update_local_lives(lives_remaining)
-	if next_weapon != current_weapon:
+	if weapon_changed:
 		equip_weapon(next_weapon)
 	if next_damage != damage:
 		damage = next_damage
-	if toilet_ids.size() != flushed_toilets.size():
+	if progress_changed:
 		flushed_toilets.clear()
 		for toilet_id in toilet_ids:
 			flushed_toilets[int(toilet_id)] = true
-		if is_local_player and network_game.has_method("update_local_toilets"):
-			network_game.update_local_toilets(flushed_toilets.size(), next_damage, next_weapon)
+	if is_local_player and (weapon_changed or progress_changed):
+		network_game.update_local_toilets(flushed_toilets.size(), next_weapon)
 	if next_alive != is_alive or respawned:
 		is_alive = next_alive
 		collision_layer = 2 if is_alive else 0
@@ -232,12 +246,13 @@ func apply_network_state(state: Dictionary) -> void:
 
 
 func apply_damage(amount: int, _attacker: Node = null) -> void:
-	if not multiplayer.is_server() or network_game.round_over or not is_alive or amount <= 0:
+	if not multiplayer.is_server() or network_game.round_over or not is_alive or amount <= 0 or network_game.are_teammates(self, _attacker):
 		return
 	regeneration.reset()
+	var old_health := health
 	health = maxi(health - amount, 0)
 	if game:
-		game.report_combat_hit(self,_attacker,health == 0)
+		game.report_combat_hit(self, _attacker, health == 0, old_health - health)
 	if is_local_player:
 		health_changed.emit(health, MAX_HEALTH)
 	if health > 0:
@@ -271,6 +286,8 @@ func respawn_at(spawn_position: Vector3, yaw: float) -> void:
 	server_firing = false
 	server_input_age = 0.0
 	queued_jump = false
+	queued_knife = false
+	knife_cooldown = 0.0
 	is_alive = true
 	input_enabled = is_local_player
 	collision_layer = 2
